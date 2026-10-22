@@ -133,7 +133,7 @@ fn check_endpoints(no_cache: bool) {
     }
     source.push_str(&function(
         include_str!("../src/realtime/world_cache_query.wesl"),
-        "query_two_sided_world_cache",
+        "query_two_sided_world_cache_with_support",
     ));
     for name in [
         "sample_random_light_transmitted",
@@ -169,9 +169,26 @@ fn check_endpoints(no_cache: bool) {
     let mut black = inputs[16];
     black[1] = [0.0; 4];
     inputs.push(black);
+    if !no_cache {
+        // New entries must use fresh path radiance without applying albedo twice.
+        for index in [0, 8, 16, 24] {
+            let mut cold = inputs[index];
+            cold[4][2] = 1.0;
+            inputs.push(cold);
+        }
+        let mut partial = inputs[16];
+        partial[4][2] = 2.0;
+        inputs.push(partial);
+        // Populated zero irradiance is real occlusion, not a cache miss.
+        let mut occluded = inputs[16];
+        occluded[2] = [0.0; 4];
+        occluded[3] = [0.0; 4];
+        inputs.push(occluded);
+    }
     let results = futures_lite::future::block_on(probe(source, &inputs));
     for (input, result) in inputs.iter().zip(results) {
         let [t, side, mode, tilt] = input[0];
+        let cold = !no_cache && input[4][2] > 0.0;
         assert!(
             result.iter().flatten().all(|v| v.is_finite()),
             "nonfinite {input:?}: {result:?}"
@@ -195,6 +212,8 @@ fn check_endpoints(no_cache: bool) {
                 0.0
             } else if mode == 2.0 {
                 [0.3, 0.6, 0.9][channel]
+            } else if cold {
+                [3.0, 5.0, 7.0][channel]
             } else if no_cache {
                 let [light_side, cosine, _, _] = input[4];
                 let signed_cosine = (tilt * (1.0 - cosine * cosine).sqrt()
@@ -231,7 +250,12 @@ fn check_endpoints(no_cache: bool) {
         close(result[5][3], 0.0); // offsets, endpoint exclusion and cache lifetime
         close(
             result[2][3],
-            1.0 + queries + if no_cache && mode == 0.0 { 1.0 } else { 0.0 },
+            1.0 + queries
+                + if (no_cache && mode == 0.0) || cold {
+                    1.0
+                } else {
+                    0.0
+                },
         );
         close(result[1][3], if mode == 3.0 { 0.0 } else { 1.0 });
         if mode != 0.0 {

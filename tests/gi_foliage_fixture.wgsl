@@ -45,8 +45,11 @@ fn resolve_ray_hit_full(ray: Ray) -> Hit {
         vec3(0.0, 0.0, 1.0), Material(vec3(0.2, 0.5, 0.8),
         select(vec3(0.0), vec3(1.0), config[0].z == 3.0), config[0].x, false));
 }
-// All fixture materials are foliage, with particulate scattering explicitly disabled.
-fn shade_surface_scattering(hit: Hit, wo: vec3f, rng: ptr<function,u32>) -> vec3f { return vec3f(0.0); }
+// Renderer-owned path boundary: outgoing radiance already includes the BSDF.
+fn shade_surface_scattering(hit: Hit, wo: vec3f, rng: ptr<function,u32>) -> vec3f {
+    let unused = rand_f(rng);
+    return vec3f(3.0, 5.0, 7.0);
+}
 fn sample_sky(d: vec3<f32>) -> vec3<f32> { return vec3(0.3, 0.6, 0.9); }
 fn query_world_cache(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, t: f32, life: u32, rng: ptr<function, u32>) -> vec3<f32> {
     queries += 1u;
@@ -54,6 +57,11 @@ fn query_world_cache(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, t: f32, life: u32
     if distance(p, vec3(0.0, 0.0, 2.0 * config[0].y)) > 0.000001
         || t != 2.0 || life != WORLD_CACHE_CELL_LIFETIME { errors += 1u; }
     return select(config[3].rgb, config[2].rgb, n.z > 0.0);
+}
+fn query_world_cache_with_support(p: vec3f, n: vec3f, v: vec3f, t: f32, life: u32, rng: ptr<function, u32>) -> vec4f {
+    let irradiance = query_world_cache(p, n, v, t, life, rng);
+    let cold = config[4].z == 1.0 || (config[4].z == 2.0 && n.z > 0.0);
+    return vec4f(irradiance, select(1.0, -1.0, cold));
 }
 struct LightSample { world_position: vec4<f32> }
 struct LightDraw { resolved_light_sample: LightSample }

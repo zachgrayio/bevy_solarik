@@ -64,11 +64,11 @@ fn image_state(images: &RenderAssets<GpuImage>, handle: Option<AssetId<Image>>) 
         .and_then(|id| images.get(id))
         .map(|image| (image.texture.id(), image.sampler.id()))
 }
-fn material_state(material: &StandardMaterial, images: &RenderAssets<GpuImage>) -> MaterialState {
-    // Hash all StandardMaterial fields. Only unique used materials are visited
-    // when scene inputs/resources change; this is not a per-instance operation.
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    format!("{material:?}").hash(&mut hash);
+fn material_state(
+    material: &StandardMaterial,
+    images: &RenderAssets<GpuImage>,
+    fingerprint: u64,
+) -> MaterialState {
     let textures = [
         &material.base_color_texture,
         &material.normal_map_texture,
@@ -81,7 +81,7 @@ fn material_state(material: &StandardMaterial, images: &RenderAssets<GpuImage>) 
             .is_none_or(|t| images.get(t.id()).is_some())
     });
     MaterialState {
-        hash: hash.finish(),
+        hash: fingerprint,
         images: textures
             .into_iter()
             .map(|t| image_state(images, t.as_ref().map(Handle::id)))
@@ -101,10 +101,11 @@ type Extensions<'a> = (
 fn extended_material_state(
     id: AssetId<StandardMaterial>,
     material: &StandardMaterial,
+    fingerprint: u64,
     images: &RenderAssets<GpuImage>,
     (detailed, gaussian, lommel): Extensions<'_>,
 ) -> MaterialState {
-    let mut state = material_state(material, images);
+    let mut state = material_state(material, images, fingerprint);
     let detail = detailed.0.get(&id);
     let water = gaussian.0.get(&id);
     // Registry membership is not itself a scene-wide lighting change. Seal
@@ -181,9 +182,15 @@ impl Dependencies {
         }
         let mut next_materials = HashMap::default();
         for id in material_ids {
-            let state = materials
-                .get(&id)
-                .map(|material| extended_material_state(id, material, images, extensions));
+            let state = materials.get(&id).map(|material| {
+                extended_material_state(
+                    id,
+                    material,
+                    materials.fingerprint(&id),
+                    images,
+                    extensions,
+                )
+            });
             let old = self.materials.get(&id);
             if old.is_some_and(|m| m.emitter) {
                 changes.old_emitters.insert(id);

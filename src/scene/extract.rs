@@ -1,15 +1,17 @@
 use super::{RaytracingMesh3d, collimated::RaytracingMaterial3d};
-use bevy_asset::{AssetId, Assets};
-use bevy_derive::Deref;
+use bevy_asset::{AssetEvent, AssetId, Assets};
 use bevy_ecs::{
+    change_detection::DetectChangesMut,
     lifecycle::RemovedComponents,
+    message::MessageReader,
     resource::Resource,
-    system::{Commands, Query},
+    system::{Commands, Query, Res, ResMut},
 };
 use bevy_pbr::{MeshMaterial3d, PreviousGlobalTransform, StandardMaterial};
-use bevy_platform::collections::HashMap;
+use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::{Extract, extract_resource::ExtractResource, sync_world::RenderEntity};
 use bevy_transform::components::GlobalTransform;
+use core::hash::{Hash, Hasher};
 
 pub fn extract_raytracing_scene(
     instances: Extract<
@@ -75,19 +77,86 @@ pub fn extract_raytracing_scene(
     }
 }
 
-#[derive(Resource, Deref, Default)]
-pub struct StandardMaterialAssets(HashMap<AssetId<StandardMaterial>, StandardMaterial>);
+#[derive(Resource, Default)]
+pub struct StandardMaterialAssets {
+    materials: HashMap<AssetId<StandardMaterial>, StandardMaterial>,
+    fingerprints: HashMap<AssetId<StandardMaterial>, u64>,
+    initialized: bool,
+}
+
+impl core::ops::Deref for StandardMaterialAssets {
+    type Target = HashMap<AssetId<StandardMaterial>, StandardMaterial>;
+    fn deref(&self) -> &Self::Target {
+        &self.materials
+    }
+}
+impl StandardMaterialAssets {
+    pub(super) fn fingerprint(&self, id: &AssetId<StandardMaterial>) -> u64 {
+        self.fingerprints[id]
+    }
+    fn update(
+        &mut self,
+        id: AssetId<StandardMaterial>,
+        material: Option<&StandardMaterial>,
+    ) -> bool {
+        let Some(material) = material else {
+            self.fingerprints.remove(&id);
+            return self.materials.remove(&id).is_some();
+        };
+        // Preserve complete-field invalidation, but only hash changed assets.
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        format!("{material:?}").hash(&mut hash);
+        let fingerprint = hash.finish();
+        if self.fingerprints.get(&id) == Some(&fingerprint) {
+            return false;
+        }
+        self.materials.insert(id, material.clone());
+        self.fingerprints.insert(id, fingerprint);
+        true
+    }
+}
 
 impl ExtractResource<bevy_render::RenderApp> for StandardMaterialAssets {
     type Source = Assets<StandardMaterial>;
 
     fn extract_resource(source: &Self::Source) -> Self {
-        Self(
-            source
-                .iter()
-                .map(|(asset_id, material)| (asset_id, material.clone()))
-                .collect(),
-        )
+        let mut extracted = Self {
+            initialized: true,
+            ..Default::default()
+        };
+        for (id, material) in source.iter() {
+            extracted.update(id, Some(material));
+        }
+        extracted
+    }
+}
+
+pub fn extract_standard_materials(
+    source: Extract<Res<Assets<StandardMaterial>>>,
+    mut events: Extract<MessageReader<AssetEvent<StandardMaterial>>>,
+    mut extracted: ResMut<StandardMaterialAssets>,
+) {
+    if !extracted.initialized {
+        *extracted = StandardMaterialAssets::extract_resource(&source);
+        events.clear();
+        return;
+    }
+    let ids: HashSet<_> = events
+        .read()
+        .filter_map(|event| match *event {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } | AssetEvent::Removed { id } => {
+                Some(id)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut changed = false;
+    let storage = extracted.bypass_change_detection();
+    for id in ids {
+        changed |= storage.update(id, source.get(id));
+    }
+    if changed {
+        extracted.set_changed();
     }
 }
 
@@ -97,6 +166,70 @@ mod tests {
     use bevy_ecs::{change_detection::DetectChanges, schedule::Schedule, world::World};
     use bevy_math::{Affine3A, Vec3};
     use bevy_render::MainWorld;
+
+    #[test]
+    fn material_events_preserve_static_fingerprints_and_track_changes_and_removal() {
+        use bevy_ecs::message::Messages;
+        let mut source = Assets::<StandardMaterial>::default();
+        let a = source.add(StandardMaterial::default());
+        let b = source.add(StandardMaterial::default());
+        let mut main = MainWorld::default();
+        main.insert_resource(source);
+        main.init_resource::<Messages<AssetEvent<StandardMaterial>>>();
+        let mut render = World::new();
+        render.insert_resource(main);
+        render.init_resource::<StandardMaterialAssets>();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(extract_standard_materials);
+        schedule.run(&mut render);
+        let initial = render
+            .resource::<StandardMaterialAssets>()
+            .fingerprint(&a.id());
+        let tick = render
+            .get_resource_ref::<StandardMaterialAssets>()
+            .unwrap()
+            .last_changed();
+        render.increment_change_tick();
+        render
+            .resource_mut::<MainWorld>()
+            .resource_mut::<Messages<AssetEvent<StandardMaterial>>>()
+            .write(AssetEvent::Modified { id: a.id() });
+        schedule.run(&mut render);
+        assert_eq!(
+            render
+                .get_resource_ref::<StandardMaterialAssets>()
+                .unwrap()
+                .last_changed(),
+            tick,
+            "identical writes must not dirty the extracted scene"
+        );
+        {
+            let mut main = render.resource_mut::<MainWorld>();
+            main.resource_mut::<Assets<StandardMaterial>>()
+                .get_mut(&a)
+                .unwrap()
+                .perceptual_roughness = 0.25;
+            main.resource_mut::<Messages<AssetEvent<StandardMaterial>>>()
+                .write(AssetEvent::Modified { id: a.id() });
+        }
+        schedule.run(&mut render);
+        let assets = render.resource::<StandardMaterialAssets>();
+        assert_ne!(assets.fingerprint(&a.id()), initial);
+        assert_eq!(assets.fingerprint(&b.id()), initial);
+        assert_eq!(assets[&a.id()].perceptual_roughness, 0.25);
+        {
+            let mut main = render.resource_mut::<MainWorld>();
+            main.resource_mut::<Assets<StandardMaterial>>()
+                .remove(a.id());
+            main.resource_mut::<Messages<AssetEvent<StandardMaterial>>>()
+                .write(AssetEvent::Removed { id: a.id() });
+        }
+        schedule.run(&mut render);
+        let assets = render.resource::<StandardMaterialAssets>();
+        assert!(!assets.contains_key(&a.id()));
+        assert!(!assets.fingerprints.contains_key(&a.id()));
+        assert!(assets.contains_key(&b.id()));
+    }
 
     #[test]
     fn extraction_reuses_unchanged_data_and_tracks_motion_and_material_lifetimes() {

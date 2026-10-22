@@ -251,11 +251,15 @@ fn probe() {
     // Claim both sides, then populate their independent incident fields.
     let cold_front = query_world_cache(p, n, p, 1.0, 7u, &rng);
     let cold_back = query_world_cache(p, -n, p, 1.0, 3u, &rng);
+    // A repeated reserved entry is still cold even with a nonzero query offset.
+    let reserved = query_world_cache_with_support(p + vec3(0.001), n, p, 1.0, 7u, &rng);
     var front_key = 63u;
     var back_key = 63u;
     for (var i = 0u; i < 64u; i++) {
         if i == 31u && config[1].w > 0.0 { continue; }
         if atomicLoad(&world_cache_checksums[i]) != 0u {
+            world_cache_geometry_data[i].last_traced_frame = 1u;
+            world_cache_geometry_data[i].support_radius = 10.0;
             if dot(world_cache_geometry_data[i].world_normal, n) > 0.99 {
                 front_key = i;
                 world_cache_radiance[i] = config[2];
@@ -270,11 +274,12 @@ fn probe() {
     let direct = query_world_cache(p, n, p, 1.0, 2u, &direct_rng);
     let opaque = query_two_sided_world_cache(p, n, 0.0, p, 1.0, 2u, &opaque_rng);
     output[1] = vec4(abs(direct - opaque), f32(direct_rng) - f32(opaque_rng));
-    output[0] = vec4(query_two_sided_world_cache(p, n, config[0].w, p, 1.0, 5u, &rng), 0.0);
+    output[0] = vec4(query_two_sided_world_cache(p, n, config[0].w, p, 1.0, 5u, &rng), reserved.w);
     output[2] = vec4(f32(front_key), f32(back_key), f32(atomicLoad(&world_cache_life[front_key])), f32(atomicLoad(&world_cache_life[back_key])));
     // Updating one field must leave the opposite entry intact.
     world_cache_radiance[front_key] = vec4(0.0);
-    output[3] = vec4(query_world_cache(p, -n, p, 1.0, 1u, &rng) + cold_front + cold_back, 0.0);
+    let populated_black = query_world_cache_with_support(p, n, p, 1.0, 1u, &rng);
+    output[3] = vec4(query_world_cache(p, -n, p, 1.0, 1u, &rng) + cold_front + cold_back, populated_black.w);
 }
 "#;
     let mut source = fixture.to_owned();
@@ -339,6 +344,14 @@ fn probe() {
             );
         }
         assert_eq!(result[1], [0.0; 4], "opaque energy or RNG changed");
+        assert_eq!(
+            result[0][3], -1.0,
+            "reservation plus jitter is not a completed trace"
+        );
+        assert_eq!(
+            result[3][3], 10.0,
+            "populated black entry retains valid support"
+        );
         assert_ne!(result[2][0], result[2][1], "hemisphere cache alias");
         assert!(
             result[2][0] < 32.0 && result[2][1] < 32.0,

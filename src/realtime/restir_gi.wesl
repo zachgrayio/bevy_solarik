@@ -24,7 +24,7 @@ import bevy_solarik::scene::raytracing_scene_bindings::resolve_ray_hit_full;
 import bevy_solarik::scene::raytracing_scene_bindings::sample_sky;
 import bevy_solarik::scene::raytracing_scene_bindings::RAY_T_MIN;
 import bevy_solarik::scene::raytracing_scene_bindings::ray_max_distance;
-import bevy_solarik::realtime::world_cache_query::query_two_sided_world_cache;
+import bevy_solarik::realtime::world_cache_query::query_two_sided_world_cache_with_support;
 import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_CELL_LIFETIME;
 import bevy_solarik::realtime::realtime_bindings::view_output;
 import bevy_solarik::realtime::realtime_bindings::gi_reservoirs_a;
@@ -40,7 +40,6 @@ import bevy_solarik::realtime::realtime_bindings::constants;
 import bevy_solarik::realtime::realtime_bindings::Reservoir;
 import bevy_solarik::realtime::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD;
 @if((REGIONAL_HISTORY)) import bevy_solarik::scene::raytracing_scene_bindings::scene_support_is_valid;
-@if((REGIONAL_HISTORY)) import bevy_solarik::realtime::world_cache_query::query_two_sided_world_cache_with_support;
 
 // https://intro-to-restir.cwyman.org/presentations/2023ReSTIR_Course_Notes.pdf
 enable wgpu_ray_query;
@@ -186,6 +185,27 @@ fn generate_initial_reservoir(world_position: vec3<f32>, world_normal: vec3<f32>
         return reservoir;
     }
 
+@if(!(NO_WORLD_CACHE)) {
+    // A moving scene can invalidate entries before their deferred update.
+    // Negative support means an unfilled entry, not a physically black result.
+    let cached = query_two_sided_world_cache_with_support(sample_point.world_position,
+        sample_point.geometric_world_normal, sample_point.material.diffuse_transmission,
+        view.world_position, ray.t, WORLD_CACHE_CELL_LIFETIME, rng);
+    if cached.w < 0.0 {
+        // Preserve transport through several canopy layers when animated
+        // geometry invalidates entries faster than the deferred cache update.
+        // This bounded estimator already includes the endpoint's BSDF.
+        reservoir.radiance = shade_surface_scattering(sample_point,
+            normalize(world_position - sample_point.world_position), rng);
+        reservoir.unbiased_contribution_weight = direction_sample.inverse_pdf;
+        return reservoir;
+    }
+    reservoir.radiance = cached.rgb;
+    reservoir.unbiased_contribution_weight = direction_sample.inverse_pdf;
+@if(REGIONAL_HISTORY) {
+    reservoir.support_radius = max(ray.t + RAY_T_MIN, cached.w) * 1.00001 + 0.01;
+}
+}
 @if(NO_WORLD_CACHE) {
     let direct_lighting = sample_random_light_transmitted(sample_point.world_position, sample_point.world_normal, sample_point.geometric_world_normal, rng).light;
     let light_cosine = dot(direct_lighting.wi, sample_point.world_normal);
@@ -196,23 +216,6 @@ fn generate_initial_reservoir(world_position: vec3<f32>, world_normal: vec3<f32>
     }
     reservoir.radiance = direct_lighting.radiance * diffuse_cosine;
     reservoir.unbiased_contribution_weight = direct_lighting.inverse_pdf * direction_sample.inverse_pdf;
-}
-@if(!(NO_WORLD_CACHE)) {
-    // Cache entries are incident hemisphere irradiance; only the endpoint
-    // consumes material weights, before the existing albedo / PI below.
-@if(REGIONAL_HISTORY) {
-    let cached = query_two_sided_world_cache_with_support(sample_point.world_position,
-        sample_point.geometric_world_normal, sample_point.material.diffuse_transmission,
-        view.world_position, ray.t, WORLD_CACHE_CELL_LIFETIME, rng);
-    reservoir.radiance = cached.rgb;
-    reservoir.support_radius = max(ray.t + RAY_T_MIN, cached.w) * 1.00001 + 0.01;
-}
-@if(!(REGIONAL_HISTORY)) {
-    reservoir.radiance = query_two_sided_world_cache(sample_point.world_position,
-        sample_point.geometric_world_normal, sample_point.material.diffuse_transmission,
-        view.world_position, ray.t, WORLD_CACHE_CELL_LIFETIME, rng);
-}
-    reservoir.unbiased_contribution_weight = direction_sample.inverse_pdf;
 }
 
     let sample_point_diffuse_brdf = sample_point.material.base_color / PI;

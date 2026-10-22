@@ -68,7 +68,8 @@ fn query_two_sided_world_cache_with_support(world_position: vec3<f32>, world_nor
         front = vec4((1.0 - diffuse_transmission) * front.rgb, front.w);
     }
     let back = query_world_cache_with_support(world_position, -world_normal, view_position, ray_t, cell_lifetime, rng);
-    return vec4(front.rgb + diffuse_transmission * back.rgb, max(front.w, back.w));
+    return vec4(front.rgb + diffuse_transmission * back.rgb,
+        select(max(front.w, back.w), -1.0, front.w < 0.0 || back.w < 0.0));
 }
 
 @if((!WORLD_CACHE_NON_ATOMIC_LIFE_BUFFER))
@@ -118,6 +119,9 @@ fn query_world_cache_with_support(world_position_in: vec3<f32>, world_normal: ve
         if existing_checksum == checksum {
             // Cache entry already exists - get radiance
             let geometry = world_cache_geometry_data[key];
+            // A checksum reserves an entry before the deferred update fills it.
+            // Jitter distance alone is not evidence of a completed sample.
+            if geometry.last_traced_frame == 0u { return vec4(0.0, 0.0, 0.0, -1.0); }
             return vec4(world_cache_radiance[key].rgb,
                 geometry.support_radius + distance(world_position_in, geometry.world_position));
         } else if existing_checksum == WORLD_CACHE_EMPTY_CELL {
@@ -126,14 +130,14 @@ fn query_world_cache_with_support(world_position_in: vec3<f32>, world_normal: ve
             world_cache_geometry_data[key].world_normal = world_normal;
             world_cache_geometry_data[key].last_traced_frame = 0u;
             world_cache_geometry_data[key].support_radius = 0.0;
-            return vec4(0.0);
+            return vec4(0.0, 0.0, 0.0, -1.0);
         } else {
             // Collision - linear probe to next entry
             key = wrap_key(key + 1u);
         }
     }
 
-    return vec4(0.0);
+    return vec4(0.0, 0.0, 0.0, -1.0);
 }
 
 fn get_cell_size(world_position: vec3<f32>, view_position: vec3<f32>, rng: ptr<function, u32>) -> f32 {

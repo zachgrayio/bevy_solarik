@@ -45,7 +45,7 @@ use bevy_render::{
 };
 use binder::prepare_raytracing_scene_bindings;
 use blas::{BlasManager, compact_raytracing_blas, prepare_raytracing_blas};
-use extract::{StandardMaterialAssets, extract_raytracing_scene};
+use extract::{StandardMaterialAssets, extract_raytracing_scene, extract_standard_materials};
 use tracing::warn;
 
 /// Creates acceleration structures and binding arrays of resources for raytracing.
@@ -101,7 +101,6 @@ impl Plugin for RaytracingScenePlugin {
             .clone();
         app.sub_app_mut(RenderApp).insert_resource(readiness);
         app.add_plugins((
-            ExtractResourcePlugin::<StandardMaterialAssets>::default(),
             ExtractResourcePlugin::<SolarikSkyLight>::default(),
             ExtractResourcePlugin::<SolarikAlphaTesting>::default(),
             ExtractResourcePlugin::<SolarikRaySettings>::default(),
@@ -123,7 +122,11 @@ impl Plugin for RaytracingScenePlugin {
             .insert_resource(RaytracingSceneBindings::new())
             .add_systems(
                 ExtractSchedule,
-                (extract_raytracing_scene, assembly::extract),
+                (
+                    extract_raytracing_scene,
+                    extract_standard_materials,
+                    assembly::extract,
+                ),
             )
             .add_systems(
                 Render,

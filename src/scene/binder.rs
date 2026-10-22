@@ -634,7 +634,13 @@ pub(crate) fn prepare_raytracing_scene_bindings(
     let delta_allowed = !dense_reference
         && !canopy.bindings_changed
         && !full_inputs
-        && !resources_changed
+        && !material_assets.is_changed()
+        && !collimated.is_changed()
+        && !detailed.is_changed()
+        && !gaussian.is_changed()
+        && !lommel.is_changed()
+        && !texture_assets.is_changed()
+        && !fallback_texture.is_changed()
         && !history_binding_changed
         && !raytracing_scene_bindings.settle_light_history
         && scene_cache.inputs.as_ref() == Some(&inputs)
@@ -645,6 +651,7 @@ pub(crate) fn prepare_raytracing_scene_bindings(
             &dirty_indices,
             &removed,
             &blas_manager,
+            resources_changed.then_some(&mesh_allocator),
             &render_device,
             &render_queue,
             diagnostics.as_deref(),
@@ -1033,6 +1040,8 @@ pub(crate) fn prepare_raytracing_scene_bindings(
         .into_iter()
         .filter_map(|(id, source)| source.map(|(_, geometry)| (id, geometry)))
         .collect();
+    prepared.vertex_buffers = vertex_buffers.map.clone();
+    prepared.index_buffers = index_buffers.map.clone();
     drop(instances_profile);
     let active_dirty_indices = active_indices.set_indices(slots.active_indices());
     if instance_id == 0 {

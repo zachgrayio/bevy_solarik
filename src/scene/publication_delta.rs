@@ -27,6 +27,8 @@ pub(super) struct PreparedSources {
     // Delta removal counters are valid only if every prior input was published.
     pub(super) complete: bool,
     pub(super) meshes: HashMap<AssetId<Mesh>, GpuInstanceGeometryIds>,
+    pub(super) vertex_buffers: HashMap<BufferId, u32>,
+    pub(super) index_buffers: HashMap<BufferId, u32>,
     pub(super) materials: HashMap<AssetId<StandardMaterial>, u32, FixedHasher>,
     pub(super) transport: TransportCounts,
 }
@@ -52,6 +54,7 @@ fn preflight(
     removed: &[u32],
     active: impl Fn(u32) -> bool,
     ready: impl Fn(AssetId<Mesh>) -> bool,
+    geometry: impl Fn(AssetId<Mesh>) -> Option<GpuInstanceGeometryIds>,
 ) -> Option<Delta> {
     if !cache.prepared.complete {
         return None;
@@ -91,7 +94,7 @@ fn preflight(
             Some(Row {
                 slot,
                 material,
-                geometry: cache.prepared.meshes.get(&input.mesh)?.clone(),
+                geometry: geometry(input.mesh)?,
                 transform: Mat4::from(input.transform),
                 previous: Mat4::from(input.previous),
             })
@@ -109,6 +112,7 @@ pub(super) fn try_publish(
     dirty: &[u32],
     removed: &[u32],
     blas: &BlasManager,
+    allocator: Option<&MeshAllocator>,
     device: &RenderDevice,
     queue: &RenderQueue,
     diagnostics: Option<&bevy_render::diagnostic::DiagnosticsRecorder>,
@@ -131,6 +135,51 @@ pub(super) fn try_publish(
     // material records remain available until this complete preflight succeeds.
     let preflight_profile = bevy_render::diagnostic::profile_scope("scene.delta_preflight");
     let removed_set: HashSet<u32> = removed.iter().copied().collect();
+    let refreshed = if let Some(allocator) = allocator {
+        let dirty_meshes: HashSet<_> = dirty
+            .iter()
+            .filter_map(|index| {
+                cache
+                    .instance_inputs
+                    .get(*index as usize)?
+                    .as_ref()
+                    .map(|input| input.mesh)
+            })
+            .collect();
+        let mut refreshed = HashMap::default();
+        for (&mesh, old) in &cache.prepared.meshes {
+            let Some(vertex) = allocator.mesh_vertex_slice(&mesh) else {
+                return false;
+            };
+            let Some(index) = allocator.mesh_index_slice(&mesh) else {
+                return false;
+            };
+            let Some(&vertex_buffer_id) = cache.prepared.vertex_buffers.get(&vertex.buffer.id())
+            else {
+                return false;
+            };
+            let Some(&index_buffer_id) = cache.prepared.index_buffers.get(&index.buffer.id())
+            else {
+                return false;
+            };
+            let next = GpuInstanceGeometryIds {
+                vertex_buffer_id,
+                vertex_buffer_offset: vertex.range.start,
+                index_buffer_id,
+                index_buffer_offset: index.range.start,
+                triangle_count: (index.range.len() / 3) as u32,
+                light_probability: old.light_probability,
+            };
+            // Relocation outside the dirty set needs the full publication.
+            if next != *old && !dirty_meshes.contains(&mesh) {
+                return false;
+            }
+            refreshed.insert(mesh, next);
+        }
+        Some(refreshed)
+    } else {
+        None
+    };
     let Some(delta) = preflight(
         cache,
         dirty,
@@ -145,6 +194,13 @@ pub(super) fn try_publish(
                     .is_some_and(|slot| cache.slots.is_active(slot))
         },
         |mesh| blas.get(&mesh).is_some(),
+        |mesh| {
+            refreshed
+                .as_ref()
+                .unwrap_or(&cache.prepared.meshes)
+                .get(&mesh)
+                .cloned()
+        },
     ) else {
         return false;
     };
@@ -222,6 +278,9 @@ pub(super) fn try_publish(
         slots.activate(row.slot);
     }
     prepared.transport = delta.transport;
+    if let Some(refreshed) = refreshed {
+        prepared.meshes = refreshed;
+    }
     let active_dirty = storage.active_indices.set_indices(slots.active_indices());
     bevy_render::diagnostic::profile_value("scene.delta_publication", 1.0, "count");
     bevy_render::diagnostic::profile_value(
@@ -319,6 +378,50 @@ fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preflight(
+        cache: &SceneCache,
+        dirty: &[u32],
+        removed: &[u32],
+        active: impl Fn(u32) -> bool,
+        ready: impl Fn(AssetId<Mesh>) -> bool,
+    ) -> Option<Delta> {
+        super::preflight(cache, dirty, removed, active, ready, |mesh| {
+            cache.prepared.meshes.get(&mesh).cloned()
+        })
+    }
+
+    #[test]
+    fn refreshed_mesh_rows_are_published_only_after_complete_preflight() {
+        let (cache, dirty) = fixture();
+        let replacement = GpuInstanceGeometryIds {
+            vertex_buffer_offset: 128,
+            index_buffer_offset: 64,
+            triangle_count: 9,
+            ..Default::default()
+        };
+        let delta = super::preflight(
+            &cache,
+            &dirty,
+            &[],
+            |_| true,
+            |_| true,
+            |_| Some(replacement.clone()),
+        )
+        .unwrap();
+        assert!(delta.rows.iter().all(|row| row.geometry == replacement));
+        assert!(super::preflight(&cache, &dirty, &[], |_| true, |_| true, |_| None).is_none());
+        assert_eq!(
+            cache
+                .prepared
+                .meshes
+                .values()
+                .next()
+                .unwrap()
+                .triangle_count,
+            3
+        );
+    }
 
     fn fixture() -> (SceneCache, Vec<u32>) {
         let mut cache = SceneCache::default();
