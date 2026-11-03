@@ -9,6 +9,12 @@ Reconstruction use RR; other `SolarikLighting` views default to NRD. Set
 
 ## Source build
 
+BARD supplies LFS-tracked native libraries and the matching C ABI bridge. Its Cargo config
+sets the workspace-relative `BARD_NATIVE_LIBS` directory; the build script selects
+`BARD_NATIVE_LIBS/<TARGET>/nrd`. Ordinary BARD builds need no SDK environment variables
+or native SDK compilation. Unresolved LFS pointers fail with a `git lfs pull` instruction.
+The source-build recipe below is the explicit override for rebuilding these artifacts.
+
 Use a C++17 compiler, CMake, Ninja, and network access for NRD's pinned ShaderMake,
 MathLib and DXC dependencies. On Windows run CMake from an x64 Visual Studio
 developer environment with the Windows SDK installed. On Linux install a C++

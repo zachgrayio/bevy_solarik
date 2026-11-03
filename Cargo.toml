@@ -1,5 +1,5 @@
 [workspace]
-members = ["vendor/bevy_render", "vendor/bevy_pbr", "crates/nrd-wgpu"]
+members = ["vendor/bevy_render", "vendor/bevy_pbr", "vendor/dlss_wgpu", "crates/nrd-wgpu"]
 exclude = ["vendor/wgpu-core", "vendor/wgpu-hal", "vendor/meshopt"]
 resolver = "3"
 
@@ -36,6 +36,7 @@ wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
 bevy_render = { path = "vendor/bevy_render" }
 bevy_pbr = { path = "vendor/bevy_pbr" }
+dlss_wgpu = { path = "vendor/dlss_wgpu" }
 
 [dev-dependencies]
 bevy_shape = "=0.20.0"
