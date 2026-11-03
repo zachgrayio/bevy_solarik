@@ -2,6 +2,8 @@ mod extract;
 #[cfg(feature = "graphics_debug")]
 pub mod graphics_debug;
 mod node;
+#[cfg(feature = "nrd")]
+mod nrd;
 mod prepare;
 #[cfg(feature = "graphics_debug")]
 pub mod query_capture;
@@ -58,6 +60,12 @@ impl Plugin for SolarikLightingPlugin {
         embedded_asset!(app, "world_cache_compact.wesl");
         load_shader_library!(app, "world_cache_priority.wesl");
         embedded_asset!(app, "world_cache_update.wesl");
+        #[cfg(feature = "nrd")]
+        {
+            embedded_asset!(app, "nrd.wesl");
+            app.sub_app_mut(RenderApp)
+                .add_systems(RenderStartup, nrd::init_pipelines);
+        }
 
         load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
 
@@ -99,13 +107,19 @@ impl Plugin for SolarikLightingPlugin {
             )
             .add_systems(
                 Core3d,
-                (solarik_lighting::<false>, solarik_lighting::<true>)
-                    // Bevy 0.19 queues deferred alpha masks in the forward main
-                    // pass too. Resolve after it so raster lighting cannot
-                    // overwrite masked pixels. Depth-zero pixels retain sky.
-                    .chain()
-                    .after(main_opaque_pass_3d)
+                solarik_lighting::<false>
+                    // Resolve deferred lighting before forward opaque/masked content.
+                    // Otherwise unlit sprites are overwritten by the G-buffer behind them.
+                    .before(main_opaque_pass_3d)
                     .after(crate::atmosphere::AtmosphereBackground)
+                    .before(main_transparent_pass_3d)
+                    .in_set(Core3dSystems::MainPass),
+            )
+            .add_systems(
+                Core3d,
+                // Keep the existing primary glass/foliage compositor after raster opaque.
+                solarik_lighting::<true>
+                    .after(main_opaque_pass_3d)
                     .before(main_transparent_pass_3d)
                     .in_set(Core3dSystems::MainPass),
             );
@@ -138,12 +152,18 @@ pub struct SolarikLighting {
     /// After setting this to true, it will automatically be toggled
     /// back to false at the end of the frame.
     pub reset: bool,
+    /// Denoise opaque lighting with NRD RELAX when DLSS Ray Reconstruction is absent.
+    /// Changing this flag resets NRD history on the next enabled frame.
+    #[cfg(feature = "nrd")]
+    pub nrd: bool,
 }
 
 impl Default for SolarikLighting {
     fn default() -> Self {
         Self {
             reset: true, // No temporal history on the first frame
+            #[cfg(feature = "nrd")]
+            nrd: true,
         }
     }
 }

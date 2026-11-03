@@ -46,6 +46,7 @@ import bevy_solarik::realtime::world_cache_query::query_world_cache;
 import bevy_solarik::realtime::world_cache_query::get_cell_size;
 import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_CELL_LIFETIME;
 import bevy_solarik::realtime::realtime_bindings::view_output;
+@if(NRD_SIGNALS) import bevy_solarik::realtime::realtime_bindings::nrd_specular;
 import bevy_solarik::realtime::realtime_bindings::gi_reservoirs_a;
 import bevy_solarik::realtime::realtime_bindings::gbuffer;
 import bevy_solarik::realtime::realtime_bindings::depth_buffer;
@@ -76,7 +77,7 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
     forest_set_seed(vec2u(pixel_index,constants.frame_index^0x57a7619bu));
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
-    if depth == 0.0 {
+    if depth == 0.0 || textureLoad(gbuffer, global_id.xy, 0).a == 0u {
         return;
     }
     let surface = gpixel_resolve(textureLoad(gbuffer, global_id.xy, 0), depth, global_id.xy, view.main_pass_viewport.zw, view.world_from_clip);
@@ -87,9 +88,11 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     var radiance: vec3<f32>;
     var wi: vec3<f32>;
+    var first_hit_distance = 0.0;
     if surface.material.roughness > DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD {
         // Surface is very rough, reuse the ReSTIR GI reservoir
         let gi_reservoir = gi_reservoirs_a[pixel_index];
+        first_hit_distance = distance(surface.world_position, gi_reservoir.sample_point_world_position);
         wi = normalize(gi_reservoir.sample_point_world_position - surface.world_position);
         radiance = shade_gi_connection(surface.world_position, surface.world_normal,
             gi_reservoir.sample_point_world_position, gi_reservoir.radiance, gi_reservoir.unbiased_contribution_weight);
@@ -108,7 +111,7 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
             wi = wi_tangent.x * T + wi_tangent.y * B + wi_tangent.z * N;
             let pdf = ggx_vndf_pdf(wo_tangent, wi_tangent, surface.material.roughness);
 
-            radiance = trace_glossy_path(global_id.xy, surface, wo_length, wi, pdf, &rng);
+            radiance = trace_glossy_path(global_id.xy, surface, wo_length, wi, pdf, &rng, &first_hit_distance);
             if surface.material.roughness > MIRROR_ROUGHNESS_THRESHOLD {
                 radiance /= pdf;
             }
@@ -117,6 +120,10 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let brdf = evaluate_specular_brdf(wo, wi, surface.world_normal, surface.material);
     radiance *= brdf * view.exposure;
+@if(NRD_SIGNALS) {
+    let direct = textureLoad(nrd_specular, global_id.xy).rgb;
+    textureStore(nrd_specular, global_id.xy, vec4(direct + radiance, min(first_hit_distance, 65504.0)));
+}
 
     var pixel_color = textureLoad(view_output, global_id.xy);
     pixel_color += vec4(radiance, 0.0);
@@ -127,7 +134,7 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 }
 
-fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initial_ray_t: f32, initial_wi: vec3<f32>, initial_p_bounce: f32, rng: ptr<function, u32>) -> vec3<f32> {
+fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initial_ray_t: f32, initial_wi: vec3<f32>, initial_p_bounce: f32, rng: ptr<function, u32>, first_hit_distance: ptr<function, f32>) -> vec3<f32> {
     var radiance = vec3(0.0);
     var throughput = vec3(1.0);
 
@@ -154,6 +161,7 @@ fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initi
     for (var i = 0u; i < 3u;) {
         // Trace ray
         let ray = trace_glass_ray(ray_origin, wi, RAY_T_MIN, ray_max_distance());
+        if i == 0u { *first_hit_distance = select(ray.t, 65504.0, scene_hit_is_miss(ray)); }
         radiance += throughput * analytic_light_radiance(ray_origin, wi,
             select(ray.t, ray_max_distance(), scene_hit_is_miss(ray)), analytic_owned, previous_scatter_position);
         if scene_hit_is_miss(ray) {

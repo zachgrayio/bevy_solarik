@@ -41,6 +41,8 @@ import bevy_solarik::realtime::realtime_bindings::view;
 import bevy_solarik::realtime::realtime_bindings::previous_view;
 import bevy_solarik::realtime::realtime_bindings::constants as lighting_constants;
 import bevy_solarik::realtime::realtime_bindings::ResolvedLightSamplePacked;
+@if(NRD_SIGNALS) import bevy_solarik::realtime::realtime_bindings::nrd_diffuse;
+@if(NRD_SIGNALS) import bevy_solarik::realtime::realtime_bindings::nrd_specular;
 
 // https://intro-to-restir.cwyman.org/presentations/2023ReSTIR_Course_Notes.pdf
 // https://d1qx31qr3h6wln.cloudfront.net/publications/ReSTIR%20GI.pdf
@@ -66,7 +68,7 @@ fn initial_and_temporal(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin
     forest_set_seed(vec2u(pixel_index,lighting_constants.frame_index));
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
-    if depth == 0.0 {
+    if depth == 0.0 || textureLoad(gbuffer, global_id.xy, 0).a == 0u {
         store_reservoir_b(global_id.xy, empty_reservoir());
         return;
     }
@@ -90,7 +92,7 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     forest_set_seed(vec2u(pixel_index,lighting_constants.frame_index));
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
-    if depth == 0.0 {
+    if depth == 0.0 || textureLoad(gbuffer, global_id.xy, 0).a == 0u {
         store_reservoir_a(global_id.xy, empty_reservoir());
         return;
     }
@@ -108,10 +110,13 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     store_reservoir_a(global_id.xy, combined_reservoir);
 
     let wo = normalize(view.world_position - surface.world_position);
-    var brdf = evaluate_diffuse_brdf(wo, merge_result.wi, surface.world_normal, surface.material);
+    let diffuse_brdf_final = evaluate_diffuse_brdf(wo, merge_result.wi, surface.world_normal, surface.material);
+    var specular_brdf_final = vec3(0.0);
+    var brdf = diffuse_brdf_final;
     // Only consider the specular lobe if the surface is not smooth, else leave it for the specular GI pass to handle
     if surface.material.roughness > SPECULAR_GI_FOR_DI_ROUGHNESS_THRESHOLD {
-        brdf += evaluate_specular_brdf(wo, merge_result.wi, surface.world_normal, surface.material);
+        specular_brdf_final = evaluate_specular_brdf(wo, merge_result.wi, surface.world_normal, surface.material);
+        brdf += specular_brdf_final;
     }
 
     var raster_error = 0.0;
@@ -122,6 +127,10 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
             view.main_pass_viewport.zw, view.world_from_clip, RASTER_SUBPIXEL_STEP);
     }
     var pixel_color = shade_di_reservoir(merge_result, surface.world_position, surface.world_normal, raster_error);
+@if(NRD_SIGNALS) {
+    textureStore(nrd_diffuse, global_id.xy, vec4(pixel_color * diffuse_brdf_final * view.exposure, 0.0));
+    textureStore(nrd_specular, global_id.xy, vec4(pixel_color * specular_brdf_final * view.exposure, 0.0));
+}
     pixel_color *= brdf;
     pixel_color += surface.material.emissive;
     pixel_color *= view.exposure;
