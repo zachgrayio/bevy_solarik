@@ -37,6 +37,10 @@ enable wgpu_ray_query;
 @group(1) @binding(21) var<storage, read_write> world_cache_b: array<u32, 1024u>;
 @group(1) @binding(22) var<storage, read_write> world_cache_active_cell_indices: array<u32, constants::WORLD_CACHE_SIZE>;
 @group(1) @binding(23) var<storage, read_write> world_cache_active_cells_count: u32;
+@if(NRD_SIGNALS)
+@group(1) @binding(25) var nrd_diffuse: texture_storage_2d<rgba16float, read_write>;
+@if(NRD_SIGNALS)
+@group(1) @binding(26) var nrd_specular: texture_storage_2d<rgba16float, read_write>;
 
 @if((DLSS_RR_GUIDE_BUFFERS))
 @group(2) @binding(0) var diffuse_albedo: texture_storage_2d<rgba8unorm, write>;

@@ -1,5 +1,5 @@
 [workspace]
-members = ["vendor/bevy_render", "vendor/bevy_pbr"]
+members = ["vendor/bevy_render", "vendor/bevy_pbr", "vendor/dlss_wgpu", "crates/nrd-wgpu"]
 exclude = ["vendor/wgpu-core", "vendor/wgpu-hal", "vendor/meshopt"]
 resolver = "3"
 
@@ -28,12 +28,15 @@ dlss = ["bevy_anti_alias/dlss"]
 force_disable_dlss = ["bevy_anti_alias/force_disable_dlss"]
 # Native capture probes; no systems or readbacks in default builds.
 graphics_debug = ["bevy_pbr/graphics_debug"]
+# Source-built NVIDIA NRD RELAX, driven through wgpu's Vulkan backend on Windows/Linux.
+nrd = ["dep:solarik-nrd-wgpu"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
 bevy_render = { path = "vendor/bevy_render" }
 bevy_pbr = { path = "vendor/bevy_pbr" }
+dlss_wgpu = { path = "vendor/dlss_wgpu" }
 
 [dev-dependencies]
 bevy_shape = "=0.20.0"
@@ -43,6 +46,7 @@ wesl = { version = "0.6.0", features = ["naga-ext"] }
 serde_json = "1"
 
 [dependencies]
+solarik-nrd-wgpu = { path = "crates/nrd-wgpu", optional = true }
 bevy_anti_alias = "0.20.0"
 bevy_app = "0.20.0"
 bevy_asset = "0.20.0"

@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "bevy_render"
-version = "0.20.0"
+version = "0.20.1"
 build = false
 autolib = false
 autobins = false

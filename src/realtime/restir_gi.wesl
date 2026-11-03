@@ -27,6 +27,7 @@ import bevy_solarik::scene::raytracing_scene_bindings::ray_max_distance;
 import bevy_solarik::realtime::world_cache_query::query_two_sided_world_cache_with_support;
 import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_CELL_LIFETIME;
 import bevy_solarik::realtime::realtime_bindings::view_output;
+@if(NRD_SIGNALS) import bevy_solarik::realtime::realtime_bindings::nrd_diffuse;
 import bevy_solarik::realtime::realtime_bindings::gi_reservoirs_a;
 import bevy_solarik::realtime::realtime_bindings::gi_reservoirs_b;
 import bevy_solarik::realtime::realtime_bindings::gbuffer;
@@ -65,7 +66,7 @@ fn initial_and_temporal(@builtin(global_invocation_id) global_id: vec3<u32>) {
     forest_set_seed(vec2u(pixel_index,constants.frame_index^0x7a78b931u));
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
-    if depth == 0.0 {
+    if depth == 0.0 || textureLoad(gbuffer, global_id.xy, 0).a == 0u {
         gi_reservoirs_b[pixel_index] = empty_reservoir();
         return;
     }
@@ -92,7 +93,7 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     forest_set_seed(vec2u(pixel_index,constants.frame_index^0x17917811u));
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
-    if depth == 0.0 {
+    if depth == 0.0 || textureLoad(gbuffer, global_id.xy, 0).a == 0u {
         gi_reservoirs_a[pixel_index] = empty_reservoir();
         return;
     }
@@ -115,7 +116,12 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let brdf = evaluate_diffuse_brdf(wo, merge_result.wi, surface.world_normal, surface.material);
 
     var pixel_color = textureLoad(view_output, global_id.xy);
-    pixel_color += vec4(shade_gi_connection(surface.world_position, surface.world_normal, combined_reservoir.sample_point_world_position, combined_reservoir.radiance, combined_reservoir.unbiased_contribution_weight) * view.exposure * brdf, 0.0);
+    let diffuse_radiance = shade_gi_connection(surface.world_position, surface.world_normal, combined_reservoir.sample_point_world_position, combined_reservoir.radiance, combined_reservoir.unbiased_contribution_weight) * view.exposure * brdf;
+    pixel_color += vec4(diffuse_radiance, 0.0);
+@if(NRD_SIGNALS) {
+    let direct = textureLoad(nrd_diffuse, global_id.xy).rgb;
+    textureStore(nrd_diffuse, global_id.xy, vec4(direct + diffuse_radiance, distance(surface.world_position, combined_reservoir.sample_point_world_position)));
+}
     textureStore(view_output, global_id.xy, pixel_color);
 }
 
