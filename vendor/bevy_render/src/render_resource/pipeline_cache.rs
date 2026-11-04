@@ -1,3 +1,4 @@
+use super::persistent_cache::PersistentCache;
 use bevy_material::descriptor::{
     BindGroupLayoutDescriptor, CachedComputePipelineId, ComputePipelineDescriptor,
     MeshPipelineDescriptor, PipelineDescriptor, RenderPipelineDescriptor,
@@ -230,6 +231,8 @@ pub struct PipelineCache {
     pub(crate) synchronous_pipeline_compilation: bool,
     /// If `true`, the shader cache needs to be repopulated from the main world's `Assets<Shader>`.
     needs_shader_reload: bool,
+    persistent_cache: Option<PersistentCache>,
+    pipeline_revision: u64,
 }
 
 impl PipelineCache {
@@ -284,7 +287,18 @@ impl PipelineCache {
             global_shader_defs,
             synchronous_pipeline_compilation,
             needs_shader_reload: true,
+            persistent_cache: None,
+            pipeline_revision: 0,
         }
+    }
+
+    /// Enables local device pipeline persistence before pipeline compilation starts.
+    pub(crate) fn enable_persistence(
+        &mut self,
+        adapter: &crate::renderer::RenderAdapterInfo,
+        storage: &PipelineCacheStorage,
+    ) {
+        self.persistent_cache = PersistentCache::new(&self.device, adapter, storage);
     }
 
     /// Get the state of a cached render pipeline.
@@ -539,6 +553,10 @@ impl PipelineCache {
         descriptor: RenderPipelineDescriptor,
     ) -> CachedPipelineState {
         let device = self.device.clone();
+        let driver_cache = self
+            .persistent_cache
+            .as_ref()
+            .map(|cache| cache.raw.clone());
         let shader_cache = self.shader_cache.clone();
         let layout_cache = self.layout_cache.clone();
         let mut bindgroup_layout_cache = self.bindgroup_layout_cache.lock().unwrap();
@@ -646,7 +664,7 @@ impl PipelineCache {
                             },
                         },
                     ),
-                    cache: None,
+                    cache: driver_cache.as_deref(),
                 };
 
                 trace_pipeline(id, "render-driver", descriptor.label);
@@ -664,6 +682,10 @@ impl PipelineCache {
         descriptor: ComputePipelineDescriptor,
     ) -> CachedPipelineState {
         let device = self.device.clone();
+        let driver_cache = self
+            .persistent_cache
+            .as_ref()
+            .map(|cache| cache.raw.clone());
         let shader_cache = self.shader_cache.clone();
         let layout_cache = self.layout_cache.clone();
         let mut bindgroup_layout_cache = self.bindgroup_layout_cache.lock().unwrap();
@@ -711,7 +733,7 @@ impl PipelineCache {
                         zero_initialize_workgroup_memory: descriptor
                             .zero_initialize_workgroup_memory,
                     },
-                    cache: None,
+                    cache: driver_cache.as_deref(),
                 };
 
                 trace_pipeline(id, "compute-driver", descriptor.label);
@@ -729,6 +751,10 @@ impl PipelineCache {
         descriptor: MeshPipelineDescriptor,
     ) -> CachedPipelineState {
         let device = self.device.clone();
+        let driver_cache = self
+            .persistent_cache
+            .as_ref()
+            .map(|cache| cache.raw.clone());
         let shader_cache = self.shader_cache.clone();
         let layout_cache = self.layout_cache.clone();
         let mut bindgroup_layout_cache = self.bindgroup_layout_cache.lock().unwrap();
@@ -850,7 +876,7 @@ impl PipelineCache {
                             },
                         },
                     ),
-                    cache: None,
+                    cache: driver_cache.as_deref(),
                 };
 
                 Ok(Pipeline::MeshPipeline(
@@ -887,6 +913,15 @@ impl PipelineCache {
         }
 
         self.pipelines = pipelines;
+        if let Some(cache) = self.persistent_cache.as_mut() {
+            let idle = self.waiting_pipelines.is_empty()
+                && self
+                    .new_pipelines
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_empty();
+            cache.update(self.pipeline_revision, self.pipelines.len(), idle);
+        }
     }
 
     fn process_pipeline(&mut self, cached_pipeline: &mut CachedPipeline, id: usize) {
@@ -903,10 +938,14 @@ impl PipelineCache {
                         self.start_create_mesh_pipeline(id, *descriptor.clone())
                     }
                 };
+                if matches!(cached_pipeline.state, CachedPipelineState::Ok(_)) {
+                    self.pipeline_revision = self.pipeline_revision.wrapping_add(1);
+                }
             }
 
             CachedPipelineState::Creating(task) => match bevy_tasks::futures::check_ready(task) {
                 Some(Ok(pipeline)) => {
+                    self.pipeline_revision = self.pipeline_revision.wrapping_add(1);
                     cached_pipeline.state = CachedPipelineState::Ok(pipeline);
                     return;
                 }
