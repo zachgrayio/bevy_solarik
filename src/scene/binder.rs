@@ -195,9 +195,9 @@ struct SceneInputs {
 
 /// Scene state that can invalidate world-space lighting history.
 ///
-/// Continuous local-light radiance changes are deliberately omitted: the light
-/// buffers are republished every frame, and the cache temporally blends its
-/// updated direct samples. Moving, adding or switching a light still invalidates history.
+/// Continuous radiance and camera-dependent selection changes are deliberately omitted:
+/// light buffers are republished every frame, and the cache temporally blends its updated
+/// direct samples. Adding, removing or moving a light still invalidates history.
 #[derive(PartialEq)]
 struct SceneHistoryInputs {
     directional: Vec<(Entity, GpuDirectionalLight)>,
@@ -216,7 +216,6 @@ struct SceneHistoryInputs {
 #[derive(PartialEq)]
 struct LocalLightHistory {
     entity: Entity,
-    active: bool,
     geometry: GpuLocalLight,
 }
 
@@ -228,12 +227,10 @@ impl SceneHistoryInputs {
                 .local
                 .iter()
                 .map(|(entity, light)| {
-                    let active = light.radiance != Vec3::ZERO;
                     let mut geometry = *light;
                     geometry.radiance = Vec3::ZERO;
                     LocalLightHistory {
                         entity: *entity,
-                        active,
                         geometry,
                     }
                 })
@@ -1857,15 +1854,20 @@ mod tests {
     }
 
     #[test]
-    fn local_light_radiance_preserves_history_but_structure_or_activity_does_not() {
+    fn radiance_and_selection_preserve_history_but_light_structure_does_not() {
         let mut inputs = history_inputs_fixture();
         let dark = SceneHistoryInputs::new(&inputs);
         inputs.local[0].1.radiance = Vec3::splat(12.0);
         let lit = SceneHistoryInputs::new(&inputs);
-        assert!(lit != dark, "activation invalidates history");
+        assert!(lit == dark, "camera-dependent selection preserves history");
         inputs.local[0].1.radiance = Vec3::splat(20.0);
         assert!(SceneHistoryInputs::new(&inputs) == lit);
         inputs.local[0].1.position.x += 1.0;
+        assert!(SceneHistoryInputs::new(&inputs) != lit);
+        inputs.local[0].1.position.x -= 1.0;
+        inputs
+            .local
+            .push((Entity::from_bits(3), GpuLocalLight::default()));
         assert!(SceneHistoryInputs::new(&inputs) != lit);
     }
 
