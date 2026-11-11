@@ -128,6 +128,7 @@ pub struct RaytracingSceneBindings {
 #[derive(Default)]
 pub(crate) struct SceneCache {
     inputs: Option<SceneInputs>,
+    history_inputs: Option<SceneHistoryInputs>,
     storage: SceneStorage,
     tlas: super::tlas::SceneTlas,
     slots: bevy_render::scene_slots::SceneSlots,
@@ -190,6 +191,64 @@ struct SceneInputs {
     weather: Option<AssetId<Image>>,
     dfg: AssetId<Image>,
     rings: crate::rings::RingData,
+}
+
+/// Scene state that can invalidate world-space lighting history.
+///
+/// Continuous local-light radiance changes are deliberately omitted: the light
+/// buffers are republished every frame, and the cache temporally blends its
+/// updated direct samples. Moving, adding or switching a light still invalidates history.
+#[derive(PartialEq)]
+struct SceneHistoryInputs {
+    directional: Vec<(Entity, GpuDirectionalLight)>,
+    local: Vec<LocalLightHistory>,
+    sky: Option<AssetId<Image>>,
+    sky_intensity: f32,
+    ray_max: f32,
+    ray_min: f32,
+    alpha_testing: bool,
+    medium: GpuLightMedium,
+    weather: Option<AssetId<Image>>,
+    dfg: AssetId<Image>,
+    rings: crate::rings::RingData,
+}
+
+#[derive(PartialEq)]
+struct LocalLightHistory {
+    entity: Entity,
+    active: bool,
+    geometry: GpuLocalLight,
+}
+
+impl SceneHistoryInputs {
+    fn new(inputs: &SceneInputs) -> Self {
+        Self {
+            directional: inputs.directional.clone(),
+            local: inputs
+                .local
+                .iter()
+                .map(|(entity, light)| {
+                    let active = light.radiance != Vec3::ZERO;
+                    let mut geometry = *light;
+                    geometry.radiance = Vec3::ZERO;
+                    LocalLightHistory {
+                        entity: *entity,
+                        active,
+                        geometry,
+                    }
+                })
+                .collect(),
+            sky: inputs.sky,
+            sky_intensity: inputs.sky_intensity,
+            ray_max: inputs.ray_max,
+            ray_min: inputs.ray_min,
+            alpha_testing: inputs.alpha_testing,
+            medium: inputs.medium,
+            weather: inputs.weather,
+            dfg: inputs.dfg,
+            rings: inputs.rings.clone(),
+        }
+    }
 }
 
 fn update_instance_inputs(
@@ -534,9 +593,12 @@ pub(crate) fn prepare_raytracing_scene_bindings(
     // old/new support; emitter, environment and unknown extensions remain global.
     // Known material registries are diffed by used material in Dependencies.
     // Preparing or evicting an unused terrain tile must not erase canopy GI.
+    let history_inputs = SceneHistoryInputs::new(&inputs);
+    let history_inputs_changed = scene_cache.history_inputs.as_ref() != Some(&history_inputs);
+    scene_cache.history_inputs = Some(history_inputs);
     let global_history_change = changes.global
         || canopy.history_global_changed
-        || scene_cache.inputs.as_ref() != Some(&inputs)
+        || history_inputs_changed
         || collimated.is_changed()
         || fallback_texture.is_changed();
     bevy_render::diagnostic::profile_value(
@@ -1655,7 +1717,7 @@ impl GpuLocalLight {
     }
 }
 
-#[derive(ShaderType, Default, PartialEq)]
+#[derive(ShaderType, Default, PartialEq, Clone, Copy)]
 struct GpuDirectionalLight {
     direction_to_light: Vec3,
     cos_theta_max: f32,
@@ -1777,6 +1839,35 @@ fn tlas_transform(transform: &Mat4) -> [f32; 12] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn history_inputs_fixture() -> SceneInputs {
+        SceneInputs {
+            directional: vec![(Entity::from_bits(1), GpuDirectionalLight::default())],
+            local: vec![(Entity::from_bits(2), GpuLocalLight::default())],
+            sky: None,
+            sky_intensity: 1.0,
+            ray_max: 100.0,
+            ray_min: 0.01,
+            alpha_testing: true,
+            medium: GpuLightMedium::default().history_key(),
+            weather: None,
+            dfg: Handle::<Image>::default().id(),
+            rings: crate::rings::RingData::default(),
+        }
+    }
+
+    #[test]
+    fn local_light_radiance_preserves_history_but_structure_or_activity_does_not() {
+        let mut inputs = history_inputs_fixture();
+        let dark = SceneHistoryInputs::new(&inputs);
+        inputs.local[0].1.radiance = Vec3::splat(12.0);
+        let lit = SceneHistoryInputs::new(&inputs);
+        assert!(lit != dark, "activation invalidates history");
+        inputs.local[0].1.radiance = Vec3::splat(20.0);
+        assert!(SceneHistoryInputs::new(&inputs) == lit);
+        inputs.local[0].1.position.x += 1.0;
+        assert!(SceneHistoryInputs::new(&inputs) != lit);
+    }
 
     #[test]
     fn weather_phases_preserve_scene_history_but_medium_and_belts_do_not() {

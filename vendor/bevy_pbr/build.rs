@@ -67,7 +67,9 @@ fn compiler(recipe: &mut Vec<u8>, meshopt: &Path) -> Option<()> {
     let path = tool.path().canonicalize().ok()?;
     append(recipe, "cpp-path", path.to_string_lossy().as_bytes());
     append(recipe, "cpp-args", format!("{:?}", tool.args()).as_bytes());
-    append(recipe, "cpp-env", format!("{:?}", tool.env()).as_bytes());
+    let command = tool.to_command();
+    let compiler_env: Vec<_> = command.get_envs().collect();
+    append(recipe, "cpp-env", format!("{compiler_env:?}").as_bytes());
     fingerprint_binary(recipe, &path)?;
     // These perform the actual MSVC C++ frontend/backend work. A toolchain
     // update must invalidate data even when the driver executable is unchanged.

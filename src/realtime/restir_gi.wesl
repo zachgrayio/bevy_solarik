@@ -38,6 +38,7 @@ import bevy_solarik::realtime::realtime_bindings::previous_depth_buffer;
 import bevy_solarik::realtime::realtime_bindings::view;
 import bevy_solarik::realtime::realtime_bindings::previous_view;
 import bevy_solarik::realtime::realtime_bindings::constants;
+import bevy_solarik::realtime::realtime_bindings::quality;
 import bevy_solarik::realtime::realtime_bindings::Reservoir;
 import bevy_solarik::realtime::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD;
 @if((REGIONAL_HISTORY)) import bevy_solarik::scene::raytracing_scene_bindings::scene_support_is_valid;
@@ -282,7 +283,7 @@ fn load_temporal_reservoir_inner(temporal_pixel_id: vec2<u32>, depth: f32, world
 }
 
 fn load_spatial_reservoir(pixel_id: vec2<u32>, depth: f32, world_position: vec3<f32>, world_normal: vec3<f32>, rng: ptr<function, u32>) -> NeighborInfo {
-    for (var i = 0u; i < 5u; i++) {
+    for (var i = 0u; i < max(1u, quality.spatial_taps); i++) {
         let spatial_pixel_id = get_neighbor_pixel_id(pixel_id, SPATIAL_REUSE_RADIUS_PIXELS, rng);
 
         let spatial_depth = textureLoad(depth_buffer, spatial_pixel_id, 0);

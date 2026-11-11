@@ -24,6 +24,7 @@ use bevy_core_pipeline::{
 use bevy_ecs::{component::Component, reflect::ReflectComponent, schedule::IntoScheduleConfigs};
 use bevy_pbr::DefaultOpaqueRendererMethod;
 use bevy_reflect::{Reflect, std_traits::ReflectDefault};
+use bevy_render::render_resource::ShaderType;
 use bevy_render::{
     ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems, renderer::RenderDevice,
 };
@@ -41,6 +42,52 @@ use tracing::warn;
 /// When using this plugin, it's highly recommended to set `shadow_maps_enabled: false` on all lights, as Solarik replaces
 /// traditional shadow mapping.
 pub struct SolarikLightingPlugin;
+
+/// Runtime ray-lighting quality shared by the GI, world-cache and compositor shaders.
+///
+/// The values are delivered through a small uniform buffer so a live preference change
+/// does not require another pipeline specialization or shader compile.
+#[derive(
+    Component,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    ShaderType,
+    bytemuck::Pod,
+    bytemuck::Zeroable,
+)]
+#[repr(C)]
+pub struct SolariQuality {
+    /// Maximum spatial reservoir taps traced per pixel.
+    pub spatial_taps: u32,
+    /// Direct-light samples used when refreshing a world-cache cell.
+    pub cache_samples: u32,
+    /// Soft upper bound on world-cache cells refreshed per frame.
+    pub cache_cell_updates: u32,
+    /// One skips all indirect diffuse and specular dispatches.
+    pub direct_only: u32,
+}
+
+impl Default for SolariQuality {
+    fn default() -> Self {
+        Self {
+            spatial_taps: 5,
+            cache_samples: 32,
+            cache_cell_updates: 40_000,
+            direct_only: 0,
+        }
+    }
+}
+
+impl SolariQuality {
+    /// Whether only direct lighting should be resolved.
+    pub fn is_direct_only(self) -> bool {
+        self.direct_only != 0
+    }
+}
 
 impl Plugin for SolarikLightingPlugin {
     fn build(&self, app: &mut App) {
@@ -156,6 +203,8 @@ pub struct SolarikLighting {
     /// Changing this flag resets NRD history on the next enabled frame.
     #[cfg(feature = "nrd")]
     pub nrd: bool,
+    /// Runtime GI and world-cache budgets for this camera.
+    pub quality: SolariQuality,
 }
 
 impl Default for SolarikLighting {
@@ -164,6 +213,32 @@ impl Default for SolarikLighting {
             reset: true, // No temporal history on the first frame
             #[cfg(feature = "nrd")]
             nrd: true,
+            quality: SolariQuality::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SolariQuality;
+
+    #[test]
+    fn default_ray_quality_preserves_original_gi_budget() {
+        let quality = SolariQuality::default();
+        assert_eq!(quality.spatial_taps, 5);
+        assert_eq!(quality.cache_samples, 32);
+        assert_eq!(quality.cache_cell_updates, 40_000);
+        assert!(!quality.is_direct_only());
+    }
+
+    #[test]
+    fn direct_only_is_an_explicit_quality_flag() {
+        let mut quality = SolariQuality {
+            spatial_taps: 2,
+            ..Default::default()
+        };
+        assert!(!quality.is_direct_only());
+        quality.direct_only = 1;
+        assert!(quality.is_direct_only());
     }
 }

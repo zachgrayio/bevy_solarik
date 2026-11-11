@@ -26,7 +26,7 @@ impl Default for MaterialInstanceMap {
         Self {
             values: MainEntityHashMap::default(),
             identity: NEXT_MAP
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .expect("material map identity capacity"),
             revision: 0,
             invalidated_through: 0,

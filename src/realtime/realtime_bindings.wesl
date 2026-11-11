@@ -37,6 +37,15 @@ enable wgpu_ray_query;
 @group(1) @binding(21) var<storage, read_write> world_cache_b: array<u32, 1024u>;
 @group(1) @binding(22) var<storage, read_write> world_cache_active_cell_indices: array<u32, constants::WORLD_CACHE_SIZE>;
 @group(1) @binding(23) var<storage, read_write> world_cache_active_cells_count: u32;
+
+struct QualityUniform {
+    spatial_taps: u32,
+    cache_samples: u32,
+    cache_cell_updates: u32,
+    direct_only: u32,
+}
+@group(1) @binding(27) var<uniform> quality: QualityUniform;
+
 @if(NRD_SIGNALS)
 @group(1) @binding(25) var nrd_diffuse: texture_storage_2d<rgba16float, read_write>;
 @if(NRD_SIGNALS)
