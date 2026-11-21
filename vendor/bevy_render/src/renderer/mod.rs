@@ -1,6 +1,10 @@
 mod raster_precision;
+#[cfg(windows)]
+mod raw_dx12_init;
 #[cfg(feature = "raw_vulkan_init")]
 pub mod raw_vulkan_init;
+#[cfg(windows)]
+pub use raw_dx12_init::*;
 mod render_context;
 mod render_device;
 mod wgpu_wrapper;

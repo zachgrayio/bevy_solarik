@@ -213,3 +213,141 @@ enum FfxApiUpscaleQualityMode {
     FFX_UPSCALE_QUALITY_MODE_NATIVEAA = 0, QUALITY = 1, BALANCED = 2,
     PERFORMANCE = 3, ULTRA_PERFORMANCE = 4
 };
+
+/* =========================================================================
+ * FidelityFX SDK 2.4.0 additional descriptors. Source (MIT, v2.4.0):
+ *   Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h
+ *   Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h
+ *   Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h
+ *   Kits/FidelityFX/api/include/vk/ffx_api_vk.h
+ *   Kits/FidelityFX/denoisers/include/ffx_denoiser.h
+ *   Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h
+ *
+ * Provenance / documentation ONLY (this header is never compiled as part of
+ * the crate). All Vulkan/DX12 opaque handles and function pointers are modeled
+ * as void* (8 bytes on x86_64); VkSwapchainCreateInfoKHR / VkAllocationCallbacks
+ * are kept opaque. The matching #[repr(C)] Rust mirrors live in src/effects.rs;
+ * their sizes were verified with an MSVC C++ sizeof probe.
+ *
+ * Effect sub-ids: (effect & 0x00ff0000) | (sub & ~0x00ff0000).
+ * ========================================================================= */
+
+/* Versions (make_version = major<<22 | minor<<12 | patch): 4.0.0 -> 0x01000000 */
+#define FFX_FRAMEGENERATION_SWAPCHAIN_VK_VERSION   0x01000000u
+#define FFX_FRAMEGENERATION_SWAPCHAIN_DX12_VERSION 0x01000000u
+
+/* ---- Descriptor types (FGSWAPCHAIN Vulkan, effect 0x00040000) ---------- */
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_VK                          0x00040001u
+#define FFX_API_CONFIGURE_DESC_TYPE_FGSWAPCHAIN_REGISTERUIRESOURCE_VK             0x00040002u
+#define FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_INTERPOLATIONCOMMANDLIST_VK            0x00040003u
+#define FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_INTERPOLATIONTEXTURE_VK                 0x00040004u
+#define FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_FUNCTIONS_VK                           0x00040005u
+#define FFX_API_DISPATCH_DESC_TYPE_FGSWAPCHAIN_WAIT_FOR_PRESENTS_VK                0x00040007u
+#define FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_VK           0x00040008u
+#define FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_VK        0x00040009u
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_VK       0x0004000au
+#define FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_VK_V2    0x0004000bu
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_MODE_VK                      0x00040010u
+
+/* ---- Descriptor types (FGSWAPCHAIN DX12, effect 0x00030000) ------------- */
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WRAP_DX12         0x00030001u
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_NEW_DX12          0x00030005u
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12     0x00030006u
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_DX12      0x0003000bu
+
+/* ---- Descriptor types (frame generation, effect 0x00020000) ------------ */
+/* 0x02 is the CONFIGURE descriptor; 0x04 is the deprecated PREPARE; 0x0c V2. */
+#define FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION                    0x00020002u
+#define FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE           0x00020004u
+#define FFX_API_CALLBACK_DESC_TYPE_FRAMEGENERATION_PRESENT            0x00020005u
+#define FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_KEYVALUE          0x00020006u
+#define FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE      0x00020007u
+#define FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO 0x0002000au
+#define FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE_V2   0x0002000bu
+#define FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2         0x0002000cu
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION      0x0002000eu
+
+/* ---- Descriptor types (denoiser, effect 0x00050000) --------------------- */
+/* 2.4.0: GPU-memory query is 0x82 (NOT 0x07); signals are 0x42..0x49. */
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DEBUG_VIEW          0x00050042u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION   0x00050043u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE       0x00050044u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR      0x00050045u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DOMINANT_LIGHT      0x00050046u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE    0x00050047u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR    0x00050048u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_SPECULAR_OCCLUSION  0x00050049u
+#define FFX_API_QUERY_DESC_TYPE_DENOISER_GET_DEFAULT_KEYVALUE   0x00050081u
+#define FFX_API_QUERY_DESC_TYPE_DENOISER_GPU_MEMORY_USAGE        0x00050082u
+
+/* ---- Descriptor types (radiance cache, effect 0x00060000) -------------- */
+/* 2.4.0 defines NO gpu-memory query at 0x07; only a debug dispatch 0x05. */
+#define FFX_API_DEBUG_DISPATCH_DESC_TYPE_RADIANCECACHE            0x00060005u
+
+/* ---- Structures (modeled with void* opaque handles) ------------------- */
+struct FfxApiDenoiserSignal {           /* 104 bytes */
+    struct FfxApiResource input, output;
+    uint32_t checkerboardOrigin;
+};
+struct VkQueueInfoFFXAPI {              /* 24 bytes */ void* queue; uint32_t familyIndex; void* submitFunc; };
+struct ffxCreateContextDescFrameGenerationSwapChainVK {   /* 152 bytes */
+    ffxCreateContextDescHeader header; void* physicalDevice, device; void** swapchain;
+    void* allocator; const void* createInfo;
+    struct VkQueueInfoFFXAPI gameQueue, asyncComputeQueue, presentQueue, imageAcquireQueue;
+};
+struct ffxQueryDescSwapchainReplacementFunctionsVK {       /* 72 bytes */
+    ffxQueryDescHeader header;
+    void* pOutCreateSwapchainFFXAPI; void* pOutDestroySwapchainFFXAPI;
+    void* pOutGetSwapchainImagesKHR; void* pOutAcquireNextImageKHR;
+    void* pOutQueuePresentKHR; void* pOutSetHdrMetadataEXT; void* pOutGetLastPresentCountFFXAPI;
+};
+struct ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceVK { /* 72 bytes */
+    ffxConfigureDescHeader header; struct FfxApiResource uiResource; uint32_t flags;
+};
+struct ffxQueryDescFrameGenerationSwapChainInterpolationCommandListVK { /* 24 bytes */
+    ffxQueryDescHeader header; void** pOutCommandList;
+};
+struct ffxQueryDescFrameGenerationSwapChainInterpolationTextureVK { /* 24 bytes */
+    ffxQueryDescHeader header; struct FfxApiResource* pOutTexture;
+};
+struct ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK { /* 16 */
+    ffxDispatchDescHeader header;
+};
+struct ffxCreateContextDescFrameGenerationSwapChainModeVK { /* 24 */
+    ffxCreateContextDescHeader header; bool composeOnPresentQueue;
+};
+struct ffxCreateContextDescFrameGenerationSwapChainVersionVK { /* 24 */
+    ffxCreateContextDescHeader header; uint32_t version;
+};
+struct ffxConfigureDescFrameGenerationSwapChainKeyValueVK { /* 40 */
+    ffxConfigureDescHeader header; uint64_t key, u64; void* ptr;
+};
+struct ffxDispatchDescFrameGenerationPrepare {              /* 184 */
+    ffxDispatchDescHeader header; uint64_t frameID; uint32_t flags; void* commandList;
+    struct FfxApiDimensions2D renderSize; struct FfxApiFloatCoords2D jitterOffset, motionVectorScale;
+    float frameTimeDelta; bool unused_reset;
+    float cameraNear, cameraFar, cameraFovAngleVertical, viewSpaceToMetersFactor;
+    struct FfxApiResource depth, motionVectors;
+};
+struct ffxDispatchDescFrameGenerationPrepareV2 {            /* 232 */
+    /* = Prepare, plus: */ float cameraPosition[3], cameraUp[3], cameraRight[3], cameraForward[3];
+};
+typedef struct ffxCallbackDescFrameGenerationPresent {       /* 192 */
+    ffxDispatchDescHeader header; void* device; void* commandList;
+    struct FfxApiResource currentBackBuffer, currentUI, outputSwapChainBuffer;
+    bool isGeneratedFrame; uint64_t frameID;
+} ffxCallbackDescFrameGenerationPresent;
+struct ffxDispatchDescDenoiserDebugView {                    /* 80 */
+    ffxDispatchDescHeader header; struct FfxApiResource output;
+    struct FfxApiDimensions2D outputSize; uint32_t mode, viewportIndex;
+};
+/* All 0x43/0x44/0x45/0x47/0x48/0x49 signal descriptors are 120 bytes:
+ * header + struct FfxApiDenoiserSignal signal. Dominant-light (0x46) is 152:
+ * header + signal + FloatCoords3D direction + FloatCoords3D emission + float angularRadius. */
+struct ffxDispatchDescDenoiserSignalBase {                   /* 120 */
+    ffxDispatchDescHeader header; struct FfxApiDenoiserSignal signal;
+};
+struct ffxDispatchDescDenoiserDominantLight {               /* 152 */
+    ffxDispatchDescHeader header; struct FfxApiDenoiserSignal signal;
+    struct FfxApiFloatCoords3D direction, emission; float angularRadius;
+};

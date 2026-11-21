@@ -86,3 +86,88 @@ pub(crate) fn with_command_buffer<R>(
         })
     }
 }
+
+/// Vulkan device requirements for the FFX SDK 2.4.0 Vulkan provider.
+///
+/// `Kits/FidelityFX/api/include/vk/ffx_api_vk.h` does **not** enumerate the
+/// required device extensions/features: it only declares `VkDeviceContext`,
+/// `VkQueueInfoFFXAPI` and the surface-format conversions. The lists below are
+/// a conservative, documented set drawn from the FFX SDK's Vulkan backend
+/// requirements (shader `FP16`/int8, 8/16-bit storage, `FP16` atomics,
+/// subgroup ops, bindless descriptor indexing, buffer device address,
+/// `VK_KHR_swapchain` for the frame-generation swapchain, and maintenance
+/// extensions).
+///
+/// **These names need runtime confirmation against the exact provider DLL you
+/// ship**: SDK generation, FSR version and the enabled effect mix change them.
+/// This is a compile-time data/ABI helper only — it opens no `VkDevice`, queries
+/// no `VkPhysicalDevice` and links nothing. Enable the corresponding
+/// `VkPhysicalDevice*Features2` fields in the application's device-creation
+/// callback before turning FSR on.
+#[allow(dead_code)]
+pub mod device_extensions {
+    /// Device extension names FFX is known to require at `VkDevice` creation.
+    pub const DEVICE_EXTENSIONS: &[&str] = &[
+        "VK_KHR_16bit_storage",
+        "VK_KHR_8bit_storage",
+        "VK_EXT_descriptor_indexing",
+        "VK_EXT_scalar_block_layout",
+        "VK_EXT_shader_atomic_float",
+        "VK_EXT_subgroup_size_control",
+        "VK_KHR_buffer_device_address",
+        "VK_KHR_maintenance1",
+        "VK_KHR_maintenance4",
+        "VK_KHR_shader_float16_int8",
+        "VK_KHR_spirv_1_4",
+        "VK_KHR_storage_buffer_storage_class",
+        "VK_KHR_swapchain",
+    ];
+
+    /// Feature / structure field names that must be enabled alongside the
+    /// extensions above (the `VkPhysicalDevice*Features` / `*Features2` chain).
+    pub const DEVICE_FEATURES: &[&str] = &[
+        "shaderFloat16",
+        "shaderInt8",
+        "shaderInt64",
+        "bufferDeviceAddress",
+        "shaderBufferFloat16Atomics",
+        "shaderSharedFloat16Atomics",
+        "descriptorIndexing",
+        "shaderSampledImageArrayNonUniformIndexing",
+        "shaderStorageBufferArrayNonUniformIndexing",
+        "storageBuffer8BitAccess",
+        "storageBuffer16BitAccess",
+        "subgroupSizeControl",
+        "scalarBlockLayout",
+    ];
+
+    /// The `DEVICE_EXTENSIONS` slice, for callers that prefer a function.
+    pub fn required_device_extensions() -> &'static [&'static str] {
+        DEVICE_EXTENSIONS
+    }
+
+    /// The `DEVICE_FEATURES` slice, for callers that prefer a function.
+    pub fn required_device_features() -> &'static [&'static str] {
+        DEVICE_FEATURES
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_extensions::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn device_requirements_are_non_empty_and_unique() {
+        assert!(!DEVICE_EXTENSIONS.is_empty());
+        assert!(!DEVICE_FEATURES.is_empty());
+        for list in [DEVICE_EXTENSIONS, DEVICE_FEATURES] {
+            let mut seen = BTreeSet::new();
+            for name in list {
+                assert!(seen.insert(*name), "duplicate device requirement: {name}");
+            }
+        }
+        assert!(!required_device_extensions().is_empty());
+        assert!(!required_device_features().is_empty());
+    }
+}

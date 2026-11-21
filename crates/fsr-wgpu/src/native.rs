@@ -244,11 +244,9 @@ pub(crate) struct Functions {
     pub destroy_context:
         unsafe extern "C" fn(*mut Context, *const AllocationCallbacks) -> ReturnCode,
     /// Resolved for ABI completeness; this integration configures through the
-    /// create descriptor and never calls `ffxConfigure`.
-    #[expect(
-        dead_code,
-        reason = "ffxConfigure is part of the pinned five-export ABI but unused here"
-    )]
+    /// create descriptor. The in-process stub-FFI tests call `ffxConfigure` to
+    /// exercise the additional 2.4.0 descriptors.
+    #[allow(dead_code)]
     pub configure: unsafe extern "C" fn(*mut Context, *const FfxApiHeader) -> ReturnCode,
     pub query: unsafe extern "C" fn(*mut Context, *mut FfxApiHeader) -> ReturnCode,
     pub dispatch: unsafe extern "C" fn(*mut Context, *const FfxApiHeader) -> ReturnCode,
@@ -389,6 +387,14 @@ impl Module {
     pub(crate) fn destroy_context(&self, context: *mut Context) -> ReturnCode {
         // SAFETY: the unique owned context is destroyed once with NULL callbacks.
         unsafe { (self.functions.destroy_context)(context, std::ptr::null()) }
+    }
+
+    /// Safe wrapper for `ffxConfigure`, used by the `#[cfg(test)]` stub-FFI
+    /// tests. Keeps the `unsafe` call inside this `#[allow]` module.
+    #[cfg(test)]
+    pub(crate) fn configure(&self, context: *mut Context, desc: *const FfxApiHeader) -> ReturnCode {
+        // SAFETY: the context is live and the descriptor outlives the call.
+        unsafe { (self.functions.configure)(context, desc) }
     }
 }
 

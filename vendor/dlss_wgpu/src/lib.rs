@@ -62,6 +62,8 @@ mod nvsdk_ngx;
 #[cfg(not(feature = "mock"))]
 mod sdk;
 
+#[cfg(feature = "dx12")]
+pub mod dx12;
 /// DLSS Ray Reconstruction.
 #[cfg(not(feature = "mock"))]
 pub mod ray_reconstruction;
