@@ -1,5 +1,5 @@
 [workspace]
-members = ["vendor/bevy_render", "vendor/bevy_shader", "vendor/bevy_pbr", "vendor/dlss_wgpu", "crates/nrd-wgpu"]
+members = ["vendor/bevy_render", "vendor/bevy_shader", "vendor/bevy_pbr", "vendor/dlss_wgpu", "crates/nrd-wgpu", "crates/fsr-wgpu"]
 exclude = ["vendor/wgpu-core", "vendor/wgpu-hal", "vendor/meshopt"]
 resolver = "3"
 
@@ -30,6 +30,10 @@ force_disable_dlss = ["bevy_anti_alias/force_disable_dlss"]
 graphics_debug = ["bevy_pbr/graphics_debug"]
 # Source-built NVIDIA NRD RELAX, driven through wgpu's Vulkan backend on Windows/Linux.
 nrd = ["dep:solarik-nrd-wgpu"]
+# AMD FidelityFX Super Resolution as the temporal upscaler (solarik-fsr-wgpu).
+# The FfxApi provider DLL is loaded dynamically at runtime: no SDK, account,
+# DLL or environment variable is needed to build, and none is linked.
+fsr = ["dep:solarik-fsr-wgpu"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
@@ -48,6 +52,7 @@ serde_json = "1"
 
 [dependencies]
 solarik-nrd-wgpu = { path = "crates/nrd-wgpu", optional = true }
+solarik-fsr-wgpu = { path = "crates/fsr-wgpu", optional = true }
 bevy_anti_alias = "0.20.0"
 bevy_app = "0.20.0"
 bevy_asset = "0.20.0"
@@ -74,6 +79,10 @@ bytemuck = "1"
 blake3 = "1"
 derive_more = { version = "2", default-features = false, features = ["from"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[build-dependencies]
+# Byte-compare deployed FSR runtime modules so a running game can keep its DLL open.
+blake3 = "1"
 
 # Solarik's lint policy; adjust it to support this crate's correctness and maintainability.
 [lints.clippy]

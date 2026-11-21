@@ -1,0 +1,25 @@
+[package]
+name = "solarik-fsr-wgpu"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Dynamically loaded AMD FidelityFX FSR (FfxApi) temporal upscaler for wgpu 30 Vulkan"
+repository = "https://github.com/AlrikOlson/bevy_solarik"
+
+# The FSR provider is loaded with dlopen/LoadLibrary at runtime. Nothing here is
+# linked against an AMD binary, so a plain Cargo build needs no SDK, account or DLL.
+[dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan"] }
+ash = "0.38"
+libloading = "0.8"
+thiserror = "2"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+doc_markdown = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"

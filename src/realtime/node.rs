@@ -216,6 +216,8 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     #[cfg(feature = "nrd")] nrd_pipelines: Res<super::nrd::NrdPipelines>,
+    #[cfg(feature = "fsr")] fsr_state: Res<super::fsr::FsrState>,
+    #[cfg(feature = "fsr")] fsr_pipelines: Res<super::fsr::FsrPipelines>,
     #[cfg(feature = "graphics_debug")] query_capture: Option<
         Res<super::query_capture::PrimaryQueryCapture>,
     >,
@@ -357,6 +359,9 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     let view_target_attachment = view_target.get_unsampled_color_attachment();
     #[cfg(feature = "nrd")]
     let nrd_target = view_target_attachment.view;
+    // Capture the view before `view_target_attachment` is moved into the render pass.
+    #[cfg(feature = "fsr")]
+    let fsr_view = view_target_attachment.view;
 
     let s = solarik_lighting_resources;
     let mut lighting_entries = BindGroupEntries::sequential((
@@ -751,6 +756,26 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         if let Some(span) = span {
             span.end(ctx.command_encoder());
         }
+    }
+    #[cfg(feature = "fsr")]
+    {
+        super::fsr::upscale(
+            &s.fsr,
+            solarik_lighting.fsr,
+            solarik_lighting.fsr_quality,
+            solarik_lighting.fsr_sharpness,
+            reset_flags & 1 != 0,
+            frame_count.0,
+            &fsr_state,
+            &render_device,
+            ctx.command_encoder(),
+            &pipeline_cache,
+            &fsr_pipelines,
+            fsr_view,
+            depth_buffer,
+            motion_vectors,
+            fsr_view,
+        );
     }
     // Earlier returns (missing scene/pipelines and the primary compositor)
     // leave both scene events and explicit full resets pending for this view.

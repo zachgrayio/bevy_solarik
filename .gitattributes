@@ -1,0 +1,7 @@
+# AMD FidelityFX FSR runtime modules, pinned to the consuming application.
+# Source, shaders, bindings and docs stay in Git; only the provider binaries use LFS.
+/native/**/*.dll  filter=lfs diff=lfs merge=lfs -text
+/native/**/*.lib  filter=lfs diff=lfs merge=lfs -text
+/native/**/*.a    filter=lfs diff=lfs merge=lfs -text
+/native/**/*.so   filter=lfs diff=lfs merge=lfs -text
+/native/**/*.so.* filter=lfs diff=lfs merge=lfs -text

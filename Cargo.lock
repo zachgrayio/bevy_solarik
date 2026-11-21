@@ -1104,6 +1104,7 @@ dependencies = [
  "derive_more",
  "futures-lite",
  "serde_json",
+ "solarik-fsr-wgpu",
  "solarik-nrd-wgpu",
  "tracing",
  "wesl",
@@ -3264,6 +3265,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "solarik-fsr-wgpu"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "libloading",
+ "thiserror 2.0.21",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]

@@ -1,0 +1,46 @@
+{
+  "note": "Runtime-only, optional. solarik-fsr-wgpu dlopens these modules; none is a link input. Populate sizes/sha256 after pinning the public SDK binaries (see README.md).",
+  "provider": "AMD FidelityFX SDK (MIT)",
+  "pinned": false,
+  "expected": [
+    {
+      "path": "x86_64-pc-windows-msvc/fsr/amd_fidelityfx_vk.dll",
+      "sdk": "v1.1.4",
+      "bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "x86_64-pc-windows-msvc/fsr/amd_fidelityfx_loader_vk.dll",
+      "sdk": "v2.4.0+",
+      "bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "x86_64-pc-windows-msvc/fsr/amd_fidelityfx_upscaler_vk.dll",
+      "sdk": "v2.4.0+",
+      "bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu/fsr/libamd_fidelityfx_vk.so",
+      "sdk": "v1.1.4 (build from MIT source)",
+      "bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu/fsr/libamd_fidelityfx_loader_vk.so",
+      "sdk": "v2.4.0+ (build from MIT source)",
+      "bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu/fsr/libamd_fidelityfx_upscaler_vk.so",
+      "sdk": "v2.4.0+ (build from MIT source)",
+      "bytes": null,
+      "sha256": null
+    }
+  ],
+  "licenses": [
+    "licenses/AMD-FidelityFX-SDK-LICENSE.txt"
+  ]
+}
