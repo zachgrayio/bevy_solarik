@@ -118,8 +118,10 @@ A consuming application that wants FSR at runtime needs only to:
 
 1. Enable the `fsr` feature on its `bevy_solarik` dependency.
 2. Provide the provider: set `FSR_DLL` / `FSR_RUNTIME_DIR`, or populate
-   `FSR_NATIVE_LIBS/<TARGET>/fsr` and let the build script deploy it. Record
-   sizes and SHA-256 in `native/artifacts.json` and retain the SDK license.
+   `FSR_NATIVE_LIBS/<TARGET>/ffx` (in the consuming app's private Git LFS tree)
+   and let the build script deploy it. Record sizes and SHA-256 in
+   `native/artifacts.json` and retain the SDK license. The public fork branch
+   stays pure source — GitHub forbids new LFS objects on public forks.
 3. Set `SolarikLighting::fsr` (plus `fsr_quality` / `fsr_sharpness`) on its
    camera, apply `TemporalJitter`, `MipBias` and the render-resolution override
    from `FsrQualityMode`, and fall back when `FsrState::library` is `None`.

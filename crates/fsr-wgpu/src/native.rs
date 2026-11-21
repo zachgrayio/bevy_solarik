@@ -298,7 +298,7 @@ fn names() -> &'static [&'static str] {
 }
 
 /// Ordered search: compile-time/runtime `FSR_DLL`, then `FSR_RUNTIME_DIR`, then
-/// the pinned `FSR_NATIVE_LIBS/<TARGET>/fsr`, then bare names left to the
+/// the pinned `FSR_NATIVE_LIBS/<TARGET>/ffx`, then bare names left to the
 /// platform loader (executable directory / system path). This is the same
 /// artifact-directory convention the DLSS and NRD build scripts use.
 fn candidate_paths() -> Vec<PathBuf> {
