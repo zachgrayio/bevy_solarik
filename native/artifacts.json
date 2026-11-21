@@ -1,43 +1,50 @@
 {
-  "note": "Runtime-only, optional. solarik-fsr-wgpu dlopens these modules; none is a link input. Populate sizes/sha256 after pinning the public SDK binaries (see README.md).",
   "provider": "AMD FidelityFX SDK (MIT)",
-  "pinned": false,
-  "expected": [
+  "sdk": "v2.4.0",
+  "pinned": true,
+  "source": "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v2.4.0/Kits/FidelityFX/signedbin",
+  "residency": "Binaries are NOT committed to this public fork (GitHub forbids new LFS objects on forks; OSS PRs stay pure source). They are pinned via Git LFS in the consuming application: BARD native/<target>/ffx/. This manifest is the authoritative size/SHA-256 record for both trees.",
+  "note": "Runtime-only, optional. solarik-fsr-wgpu dlopens the loader and effect modules; none is a link input. build_support/native.rs deploys whatever FSR_NATIVE_LIBS/FSR_RUNTIME_DIR points at. Linux provider libraries are built from the pinned MIT source (D6) and recorded here once produced.",
+  "files": [
     {
-      "path": "x86_64-pc-windows-msvc/fsr/amd_fidelityfx_vk.dll",
-      "sdk": "v1.1.4",
-      "bytes": null,
-      "sha256": null
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_loader_vk.dll",
+      "bytes": 39184,
+      "sha256": "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9"
     },
     {
-      "path": "x86_64-pc-windows-msvc/fsr/amd_fidelityfx_loader_vk.dll",
-      "sdk": "v2.4.0+",
-      "bytes": null,
-      "sha256": null
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_upscaler_vk.dll",
+      "bytes": 36135696,
+      "sha256": "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7"
     },
     {
-      "path": "x86_64-pc-windows-msvc/fsr/amd_fidelityfx_upscaler_vk.dll",
-      "sdk": "v2.4.0+",
-      "bytes": null,
-      "sha256": null
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_framegeneration_vk.dll",
+      "bytes": 36806928,
+      "sha256": "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4"
     },
     {
-      "path": "x86_64-unknown-linux-gnu/fsr/libamd_fidelityfx_vk.so",
-      "sdk": "v1.1.4 (build from MIT source)",
-      "bytes": null,
-      "sha256": null
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_loader_dx12.dll",
+      "bytes": 39184,
+      "sha256": "e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb"
     },
     {
-      "path": "x86_64-unknown-linux-gnu/fsr/libamd_fidelityfx_loader_vk.so",
-      "sdk": "v2.4.0+ (build from MIT source)",
-      "bytes": null,
-      "sha256": null
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_upscaler_dx12.dll",
+      "bytes": 57664272,
+      "sha256": "aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace"
     },
     {
-      "path": "x86_64-unknown-linux-gnu/fsr/libamd_fidelityfx_upscaler_vk.so",
-      "sdk": "v2.4.0+ (build from MIT source)",
-      "bytes": null,
-      "sha256": null
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_denoiser_dx12.dll",
+      "bytes": 8993552,
+      "sha256": "4ca5182d5c8a855441e0c82673716e4776f9afcfadfdb4225d2fc6113b0f853c"
+    },
+    {
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_radiancecache_dx12.dll",
+      "bytes": 800528,
+      "sha256": "c87394ebf928e681cd66bea3a3a90e9ce43d0b8682fc8a404ba4512b38d88f50"
+    },
+    {
+      "path": "x86_64-pc-windows-msvc/ffx/amd_fidelityfx_framegeneration_dx12.dll",
+      "bytes": 29679376,
+      "sha256": "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6"
     }
   ],
   "licenses": [

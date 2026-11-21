@@ -13,6 +13,7 @@ pub(crate) fn load_cloud_field(app: &mut bevy_app::App) {
 }
 
 pub mod atmosphere;
+pub mod capabilities;
 pub mod coarse_appearance;
 pub mod coarse_cache;
 pub mod coarse_region;

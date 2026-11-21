@@ -1,7 +1,10 @@
 target/
 *.dll
-# Pinned FSR runtime modules are LFS-tracked build inputs, not stray binaries.
-!/native/**/*.dll
+# FFX provider modules are runtime-only and pinned in the consuming
+# application's private Git LFS tree (BARD), not in this public fork: GitHub
+# forbids new LFS objects on public forks, and an OSS PR must stay pure source.
+# Keep a local copy under native/<target>/ffx/ for offline probes; it is never
+# committed here. See native/README.md.
 
 *.rs.bk
 __pycache__

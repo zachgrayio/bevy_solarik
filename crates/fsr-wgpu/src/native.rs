@@ -31,11 +31,14 @@ pub(crate) const QUERY_DESC_RENDER_RESOLUTION: StructType = 0x0001_0003;
 pub(crate) const QUERY_DESC_JITTER_PHASE_COUNT: StructType = 0x0001_0004;
 /// `FFX_API_MAKE_EFFECT_SUB_ID(FFX_API_EFFECT_ID_UPSCALE, 0x05)`.
 pub(crate) const QUERY_DESC_JITTER_OFFSET: StructType = 0x0001_0005;
-/// `FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK` is version-dependent: `0x00000003`
-/// on SDK 1.1.x, `0x01000003` on the current main-branch headers and `0x02000003`
-/// on SDK 2.4.0. The layout is identical, only the discriminator differs, so
-/// context creation retries these in order unless `FSR_BACKEND_VK_TYPE` overrides.
-pub(crate) const BACKEND_VK_TYPES: [StructType; 3] = [0x0000_0003, 0x0100_0003, 0x0200_0003];
+/// `FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK` is version-dependent. SDK
+/// 2.4.0 defines `FFX_API_BACKEND_ID_VK = 0x01000000` and
+/// `FFX_API_MAKE_BACKEND_SUB_ID(..., 0x03)` = `0x01000003`; SDK 1.1.x used
+/// `0x00000003` (the `_DEPRECATED` descriptor). `0x02000003` belongs to the
+/// Xbox backend id and is not a Vulkan type. The layout is identical, only the
+/// discriminator differs, so context creation retries these in order unless
+/// `FSR_BACKEND_VK_TYPE` overrides.
+pub(crate) const BACKEND_VK_TYPES: [StructType; 2] = [0x0100_0003, 0x0000_0003];
 
 const _: () = assert!(EFFECT_ID_UPSCALE == 0x0001_0000);
 
@@ -274,20 +277,17 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
+// SDK 2.4.0 ships a tiny loader plus per-effect DLLs. The loader is the
+// FfxApi entry point; it resolves effect DLLs beside itself / the exe. Both
+// Vulkan and DX12 sets are listed because the backend is chosen at runtime.
+// The 1.1.x monolithic names remain last as a fallback for older providers.
 const WINDOWS_NAMES: &[&str] = &[
-    "amd_fidelityfx_vk.dll",
-    "amd_fidelityfx_upscaler_vk.dll",
     "amd_fidelityfx_loader_vk.dll",
-    "amd_fidelityfx_dx12.dll",
-    "amd_fidelityfx_upscaler_dx12.dll",
     "amd_fidelityfx_loader_dx12.dll",
+    "amd_fidelityfx_vk.dll",
+    "amd_fidelityfx_dx12.dll",
 ];
-const UNIX_NAMES: &[&str] = &[
-    "libamd_fidelityfx_vk.so",
-    "libamd_fidelityfx_upscaler_vk.so",
-    "libamd_fidelityfx_loader_vk.so",
-    "libamd_fidelityfx_dx12.so",
-];
+const UNIX_NAMES: &[&str] = &["libamd_fidelityfx_loader_vk.so", "libamd_fidelityfx_vk.so"];
 
 fn names() -> &'static [&'static str] {
     if cfg!(windows) {

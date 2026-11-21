@@ -15,19 +15,27 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Pinned FSR provider module names per target. SDK 1.1.x ships one Vulkan DLL;
-/// SDK 2.4+ splits loader and upscaler. The runtime loader tries every name.
+/// Pinned FidelityFX SDK 2.4.0 provider modules per target. The SDK ships a
+/// small loader plus per-effect DLLs; the loader resolves effect DLLs next to
+/// itself (and beside the exe), so all eight Windows modules are deployed.
+/// Vulkan and DX12 sets are both listed because the backend is chosen at
+/// runtime. Linux provider libraries are built from the pinned MIT source (D6).
 fn runtime_modules(target: &str) -> Option<&'static [&'static str]> {
     match target {
         "x86_64-pc-windows-msvc" => Some(&[
-            "amd_fidelityfx_vk.dll",
             "amd_fidelityfx_loader_vk.dll",
             "amd_fidelityfx_upscaler_vk.dll",
+            "amd_fidelityfx_framegeneration_vk.dll",
+            "amd_fidelityfx_loader_dx12.dll",
+            "amd_fidelityfx_upscaler_dx12.dll",
+            "amd_fidelityfx_denoiser_dx12.dll",
+            "amd_fidelityfx_radiancecache_dx12.dll",
+            "amd_fidelityfx_framegeneration_dx12.dll",
         ]),
         "x86_64-unknown-linux-gnu" => Some(&[
-            "libamd_fidelityfx_vk.so",
             "libamd_fidelityfx_loader_vk.so",
             "libamd_fidelityfx_upscaler_vk.so",
+            "libamd_fidelityfx_framegeneration_vk.so",
         ]),
         // Metal targets compile the fork without Vulkan-only features and have
         // no pinned modules; a system-provided provider is still loadable.
@@ -100,7 +108,7 @@ fn native_paths() -> Option<(PathBuf, PathBuf)> {
     if let Some(root) = env::var_os("FSR_NATIVE_LIBS") {
         let root = PathBuf::from(root);
         if root.is_absolute() {
-            return Some((root.join(&target).join("fsr"), root.join("licenses")));
+            return Some((root.join(&target).join("ffx"), root.join("licenses")));
         }
         println!(
             "cargo:warning=FSR_NATIVE_LIBS must be absolute; ignoring FSR artifact deployment"

@@ -27,6 +27,7 @@
 //! Register them in the application's device-creation callback before enabling
 //! FSR, and see `docs/fsr.md` in the parent crate for the measured behaviour.
 
+pub mod effects;
 #[allow(
     unsafe_code,
     reason = "The FfxApi ABI and raw Vulkan handles are isolated behind owned safe Rust values"

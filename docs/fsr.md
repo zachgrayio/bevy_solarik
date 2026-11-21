@@ -34,19 +34,33 @@ consuming application. AMD's own `ffx_api_loader.h` recommends exactly this
 ## Provider and access (no sign-in)
 
 Source and signed Windows binaries are public and MIT-licensed at
-<https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK>. There is **no
-developer account, EULA gate or login** (unlike NVIDIA DLSS). Pinned Windows
-Vulkan names: `amd_fidelityfx_vk.dll` (SDK 1.1.x) or
-`amd_fidelityfx_loader_vk.dll` + `amd_fidelityfx_upscaler_vk.dll` (SDK 2.4+).
-AMD publishes no prebuilt Linux `.so`; build `libamd_fidelityfx_vk.so` from the
-MIT source with `-DFFX_API_BACKEND=VK_X64`. SDK 2.0–2.3 is DX12-only and has no
-Vulkan provider. [native/README.md](../native/README.md) owns the artifact record.
+<https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK>, pinned at tag
+**v2.4.0** in [native/artifacts.json](../native/artifacts.json). There is **no
+developer account, EULA gate or login** (unlike NVIDIA DLSS). The 2.4.0 loader
+(`amd_fidelityfx_loader_vk.dll` / `_dx12.dll`) resolves per-effect DLLs beside
+itself: upscaler, frame generation (Vulkan), denoiser / radiance cache /
+frame generation (DX12). AMD publishes **no prebuilt Linux `.so`** and **no
+Vulkan build of Ray Regeneration or radiance cache**; Linux provider libraries
+are built from the MIT source with `-DFFX_API_BACKEND=VK_X64` (decision D6).
+[native/README.md](../native/README.md) owns the artifact record.
 
 Search order, first match wins: `FSR_DLL` (exact path), `FSR_RUNTIME_DIR`,
-`FSR_NATIVE_LIBS/<TARGET>/fsr` and finally the platform loader path
+`FSR_NATIVE_LIBS/<TARGET>/ffx` and finally the platform loader path
 (executable directory / system path). `FSR_BACKEND_VK_TYPE` pins the version-
-specific backend descriptor discriminator; by default all three known values
-(`0x00000003`, `0x01000003`, `0x02000003`) are retried at context creation.
+specific backend descriptor discriminator; SDK 2.4.0 uses `0x01000003` and
+1.1.x used `0x00000003` (both retried at context creation). `0x02000003` is the
+Xbox backend id, not a Vulkan type.
+
+## SDK 2.4.0 effect bindings
+
+`crates/fsr-wgpu/src/effects.rs` mirrors the additional FfxApi descriptors with
+`#[repr(C)]` types, compile-time size assertions and in-process stub-FFI tests:
+upscaler version (`0x0001000b`), DX12 backend (`0x00000002`), denoiser /
+FSR Ray Regeneration (`0x00050000`), radiance cache (`0x00060000`) and frame
+generation (`0x00020000`), plus provider-version enumeration/override. Layouts
+were cross-checked against the MSVC-compiled C declarations recorded in
+`src/abi.h`. These are the ABI layer for Phases 2/5/6; GPU dispatch wiring is
+hardware-gated (D12) and reviewed on RX 9000+ / RTX 50-series.
 
 ## Engine attach
 
