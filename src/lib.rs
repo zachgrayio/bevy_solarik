@@ -24,6 +24,8 @@ pub mod coarse_spatial_scene;
 pub mod coarse_transport;
 pub mod depth_probe;
 pub mod filtered_canopy;
+#[cfg(feature = "fsr_device_init")]
+pub mod fsr_device_init;
 pub mod gaussian;
 pub mod lommel;
 pub mod material;

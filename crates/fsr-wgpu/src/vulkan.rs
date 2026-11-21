@@ -6,7 +6,10 @@
 
 use crate::{native, quality};
 use ash::vk::Handle as _;
-use std::{ffi::c_void, sync::OnceLock};
+use std::{
+    ffi::{CStr, c_void},
+    sync::OnceLock,
+};
 use wgpu::hal::api::Vulkan;
 
 static VULKAN_LOADER: OnceLock<Option<libloading::Library>> = OnceLock::new();
@@ -106,6 +109,8 @@ pub(crate) fn with_command_buffer<R>(
 /// callback before turning FSR on.
 #[allow(dead_code)]
 pub mod device_extensions {
+    use std::{collections::BTreeSet, ffi::CStr};
+
     /// Device extension names FFX is known to require at `VkDevice` creation.
     pub const DEVICE_EXTENSIONS: &[&str] = &[
         "VK_KHR_16bit_storage",
@@ -150,11 +155,121 @@ pub mod device_extensions {
     pub fn required_device_features() -> &'static [&'static str] {
         DEVICE_FEATURES
     }
+
+    /// The required extensions as `&'static CStr`, matching `DEVICE_EXTENSIONS`
+    /// one-for-one. These are the exact values to append to wgpu-hal's
+    /// `CreateDeviceCallbackArgs::extensions` (`Vec<&'static CStr>`) so the
+    /// `VkDevice` is created with the FFX Vulkan provider's requirements.
+    ///
+    /// Built from `CStr::from_bytes_with_nul` at compile time on static byte
+    /// literals — no runtime allocation, no GPU/DLL/device access.
+    pub const DEVICE_EXTENSION_CSTRS: &[&CStr] = &[
+        cstr(b"VK_KHR_16bit_storage\0"),
+        cstr(b"VK_KHR_8bit_storage\0"),
+        cstr(b"VK_EXT_descriptor_indexing\0"),
+        cstr(b"VK_EXT_scalar_block_layout\0"),
+        cstr(b"VK_EXT_shader_atomic_float\0"),
+        cstr(b"VK_EXT_subgroup_size_control\0"),
+        cstr(b"VK_KHR_buffer_device_address\0"),
+        cstr(b"VK_KHR_maintenance1\0"),
+        cstr(b"VK_KHR_maintenance4\0"),
+        cstr(b"VK_KHR_shader_float16_int8\0"),
+        cstr(b"VK_KHR_spirv_1_4\0"),
+        cstr(b"VK_KHR_storage_buffer_storage_class\0"),
+        cstr(b"VK_KHR_swapchain\0"),
+    ];
+
+    /// Compile-time `&CStr` from a NUL-terminated byte literal. `const fn` safe
+    /// on 1.98; the `match` keeps it total (never panics on a valid literal).
+    const fn cstr(bytes: &'static [u8]) -> &'static CStr {
+        match CStr::from_bytes_with_nul(bytes) {
+            Ok(c) => c,
+            Err(_) => panic!("device extension literal must be NUL-terminated"),
+        }
+    }
+
+    /// Capability-filtered extension selection: given the extension names the
+    /// physical device actually exposes, return the subset of the FFX-required
+    /// extensions that are both required AND available, in `DEVICE_EXTENSIONS`
+    /// order, de-duplicated. Pure CPU data — no GPU/DLL/device work.
+    ///
+    /// This is the safe core of FFX Vulkan device setup: wgpu-hal's
+    /// `open_with_callback` lets a callback add `&'static CStr` extensions, but
+    /// requesting an extension the device lacks would fail `vkCreateDevice`.
+    /// Filtering against the adapter's reported extensions avoids that.
+    pub fn supported_subset<'a>(
+        available: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<&'static CStr> {
+        let available: BTreeSet<&str> = available.into_iter().collect();
+        DEVICE_EXTENSIONS
+            .iter()
+            .zip(DEVICE_EXTENSION_CSTRS)
+            .filter(|(name, _)| available.contains(*name))
+            .map(|(_, cstr)| *cstr)
+            .collect()
+    }
+}
+
+/// Append the FFX-required Vulkan device extensions that the adapter supports
+/// to wgpu-hal's `CreateDeviceCallbackArgs::extensions` vector.
+///
+/// `available` is the list of device extension names the physical device
+/// exposes (from `vkEnumerateDeviceExtensionProperties`). Only supported FFX
+/// extensions are appended, and never duplicated. A NRD/DLSS callback may have
+/// already appended some — this function is idempotent and order-preserving.
+pub fn register_device_extensions<'a>(
+    extensions: &mut Vec<&'static CStr>,
+    available: impl IntoIterator<Item = &'a str>,
+) -> usize {
+    let mut added = 0;
+    for cstr in device_extensions::supported_subset(available) {
+        if !extensions.contains(&cstr) {
+            extensions.push(cstr);
+            added += 1;
+        }
+    }
+    added
+}
+
+/// Register FFX device extensions inside wgpu-hal's create-device callback,
+/// enumerating the physical device's real capabilities first.
+///
+/// Call this from a `RawVulkanInitSettings::add_create_device_callback`
+/// closure, passing the `CreateDeviceCallbackArgs` and the raw `Adapter` it
+/// receives. It queries `vkEnumerateDeviceExtensionProperties` through the
+/// adapter's ash instance and appends only FFX-required extensions that the
+/// device actually supports, so `vkCreateDevice` can never be handed an
+/// unsupported extension (safe on every GPU). Returns the number appended.
+///
+/// This runs at device creation (GPU present); the pure filtering it delegates
+/// to is CPU-unit-tested. It never opens a DLL or creates a wgpu device itself.
+pub fn register_device_extensions_for_adapter(
+    args: &mut wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>,
+    adapter: &wgpu::hal::vulkan::Adapter,
+) -> usize {
+    // SAFETY: the adapter's raw instance and physical device are live for the
+    // duration of the create-device callback; ash owns the returned Vec.
+    let props = unsafe {
+        adapter
+            .shared_instance()
+            .raw_instance()
+            .enumerate_device_extension_properties(adapter.raw_physical_device())
+    };
+    let names: Vec<String> = match props {
+        Ok(props) => props
+            .iter()
+            .filter_map(|p| p.extension_name_as_c_str().ok())
+            .filter_map(|c| c.to_str().ok().map(str::to_owned))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    register_device_extensions(args.extensions, names.iter().map(String::as_str))
 }
 
 #[cfg(test)]
 mod tests {
     use super::device_extensions::*;
+    use super::register_device_extensions;
     use std::collections::BTreeSet;
 
     #[test]
@@ -169,5 +284,59 @@ mod tests {
         }
         assert!(!required_device_extensions().is_empty());
         assert!(!required_device_features().is_empty());
+    }
+
+    #[test]
+    fn cstr_constants_match_str_names_one_for_one() {
+        use std::ffi::CStr;
+        assert_eq!(DEVICE_EXTENSION_CSTRS.len(), DEVICE_EXTENSIONS.len());
+        for (name, cstr) in DEVICE_EXTENSIONS.iter().zip(DEVICE_EXTENSION_CSTRS) {
+            assert_eq!(*name, cstr.to_str().expect("valid UTF-8 extension name"));
+            assert_eq!(
+                cstr.to_bytes_with_nul().last(),
+                Some(&0),
+                "must be NUL-terminated"
+            );
+            // Round-trips through the std CStr constructor.
+            assert_eq!(
+                CStr::from_bytes_with_nul(cstr.to_bytes_with_nul()).unwrap(),
+                *cstr
+            );
+        }
+    }
+
+    #[test]
+    fn supported_subset_filters_unsupported_and_preserves_order() {
+        let available = [
+            "VK_KHR_swapchain",
+            "VK_KHR_16bit_storage", // out of order on purpose
+            "unrelated_extension",
+        ];
+        let got: Vec<&str> = supported_subset(available)
+            .iter()
+            .map(|c| c.to_str().unwrap())
+            .collect();
+        assert_eq!(got, ["VK_KHR_16bit_storage", "VK_KHR_swapchain"]);
+    }
+
+    #[test]
+    fn supported_subset_is_empty_for_unsupported_device() {
+        assert!(supported_subset(["VK_KHR_swapchain_does_not_exist"]).is_empty());
+        assert_eq!(
+            supported_subset(DEVICE_EXTENSIONS.iter().copied()).len(),
+            13
+        );
+    }
+
+    #[test]
+    fn register_device_extensions_is_idempotent_and_existing_safe() {
+        let mut exts: Vec<&'static std::ffi::CStr> = vec![];
+        let first = register_device_extensions(&mut exts, DEVICE_EXTENSIONS.iter().copied());
+        assert_eq!(first, 13);
+        assert_eq!(exts.len(), 13);
+        // Running again adds nothing; a pre-existing DLSS-style extension is kept.
+        let second = register_device_extensions(&mut exts, DEVICE_EXTENSIONS.iter().copied());
+        assert_eq!(second, 0);
+        assert_eq!(exts.len(), 13);
     }
 }

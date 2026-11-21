@@ -1,3 +1,4 @@
+mod effects_chain;
 mod extract;
 #[cfg(feature = "fsr")]
 mod fsr;
@@ -10,6 +11,12 @@ mod prepare;
 #[cfg(feature = "graphics_debug")]
 pub mod query_capture;
 mod view_pipelines;
+
+pub use effects_chain::{
+    ChainError, DescriptorChain, DescriptorNode, EffectChainPlan, EffectStep, FfxBackend,
+    FsrEffectChainConfig, SkippedEffect, denoiser_signal_chain, desc_types,
+    fg_swapchain_descriptors_exist, resolve_effect_chain, validate_chain,
+};
 
 use crate::SolarikPlugins;
 use bevy_app::{App, Plugin};

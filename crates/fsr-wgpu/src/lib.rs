@@ -44,6 +44,12 @@ pub use quality::{
     QualityMode, dispatch_flags, effect_sub_id, flags, formats, resource_types, states,
     surface_format, usage,
 };
+/// Vulkan device-extension helpers for the application's device-creation
+/// callback (see `docs/fsr.md`). Re-exported from the private `vulkan` module.
+pub use vulkan::{
+    device_extensions::{DEVICE_EXTENSION_CSTRS, DEVICE_EXTENSIONS, DEVICE_FEATURES},
+    register_device_extensions, register_device_extensions_for_adapter,
+};
 
 use std::sync::Arc;
 

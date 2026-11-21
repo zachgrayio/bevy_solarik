@@ -34,6 +34,11 @@ nrd = ["dep:solarik-nrd-wgpu"]
 # The FfxApi provider DLL is loaded dynamically at runtime: no SDK, account,
 # DLL or environment variable is needed to build, and none is linked.
 fsr = ["dep:solarik-fsr-wgpu"]
+# Register FFX Vulkan device extensions at VkDevice creation (the measured
+# ffxCreateContext crash cause). Enables bevy_render's raw Vulkan init seam and
+# exposes install_fsr_device_extensions / FsrDeviceInitPlugin; the application
+# calls it before the renderer is built. Capability-filtered, safe on all GPUs.
+fsr_device_init = ["fsr", "bevy_render/raw_vulkan_init"]
 # FSR Ray Regeneration denoiser (DX12, RX 9000+). Wires the denoiser dispatch
 # descriptors from solarik-fsr-wgpu::effects into the Solari denoiser slot.
 fsr_ray_regeneration = ["fsr"]

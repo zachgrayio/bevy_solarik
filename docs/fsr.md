@@ -161,13 +161,33 @@ Vulkan device, all non-experimental features enabled):
   `FFX_API_RETURN_ERROR` (1), confirming the descriptor layout and chain are
   correct and that the crash is device setup, not a bindings bug.
 
-So before a visual playtest the consuming application must register the FFX
-Vulkan device extensions in its device-creation callback and confirm
-`ffxCreateContext`/`ffxDispatch` on real `VkImage`s. NativeAA compositing and
-scaled-resolution render-target sizing then need a hardware image-review pass
-on Windows and Linux, as NRD's validation did. Because FSR is opt-in
-(`SolarikLighting::fsr = false` by default), an application that has not done
-this setup is unaffected.
+### Registration is now wired (CPU-complete)
+
+The device-extension registration is implemented, not just documented. Feature
+`fsr_device_init` (which also enables `bevy_render/raw_vulkan_init`) exposes
+`bevy_solarik::fsr_device_init::install_fsr_device_extensions(app)` and the
+`FsrDeviceInitPlugin`. The application calls `install(..)` before `RenderPlugin`
+builds the device; it contributes a `RawVulkanInitSettings` create-device
+callback through `get_resource_or_init`, composing with the DLSS plugin's own
+callbacks.
+
+The callback is **capability-filtered**: `solarik-fsr-wgpu` enumerates the
+physical device's real extensions via `vkEnumerateDeviceExtensionProperties`
+(`register_device_extensions_for_adapter`) and appends only the FFX-required
+extensions the device reports as supported (`register_device_extensions` /
+`supported_subset`, pure and unit-tested). It never requests an unsupported
+extension, so `vkCreateDevice` stays safe on every GPU; it is additive and
+idempotent. `unsafe` is confined to the FSR crate's `vulkan` module and the
+fork's narrow callback registration — the application writes no unsafe code.
+
+What still needs a hardware playtest: confirming `ffxCreateContext`/`ffxDispatch`
+on real `VkImage`s against the pinned signed FFX 2.4.0 DLL, and NativeAA
+compositing / scaled-resolution render-target image review on Windows and
+Linux, as NRD's validation did. Because FSR is opt-in
+(`SolarikLighting::fsr = false` by default), an application that has not
+enabled the feature is unaffected. The exact extension-name set is the FFX
+SDK's documented Vulkan requirements and should be re-confirmed against the
+shipped provider DLL on hardware (SDK generation/effect mix can change them).
 
 - FSR is an upscaler, not a ray-reconstruction denoiser: NRD/DLSS RR remain the
   lighting denoisers, and ReSTIR stays active. FSR runs after their resolve.
