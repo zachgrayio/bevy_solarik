@@ -41,6 +41,12 @@ fsr_ray_regeneration = ["fsr"]
 fsr_radiance_cache = ["fsr"]
 # Frame generation (FSR FG + DLSS-G) — pacing/swapchain work, post-v1 backlog.
 fsr_frame_generation = ["fsr"]
+# NGX DLSS-G frame-generation data/keys layer (dlss_wgpu::frame_generation).
+# Header-verified parameter keys + enums; the create/evaluate runtime path is a
+# documented Unsupported stub until bindings are regenerated with dlssg.h.
+# `dlss_wgpu` is reached via bevy_anti_alias / BARD's own direct dependency, not
+# a direct dep here, so this is a plain marker feature like the fsr_* ones.
+dlss_frame_generation = []
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }

@@ -23,4 +23,5 @@ cc = "1"
 debug_overlay = []
 mock = []
 dx12 = []
+frame_generation = []
 

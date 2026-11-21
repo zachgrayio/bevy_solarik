@@ -64,6 +64,10 @@ mod sdk;
 
 #[cfg(feature = "dx12")]
 pub mod dx12;
+
+/// DLSS Frame Generation (data-only, CPU-verifiable layer).
+#[cfg(feature = "frame_generation")]
+pub mod frame_generation;
 /// DLSS Ray Reconstruction.
 #[cfg(not(feature = "mock"))]
 pub mod ray_reconstruction;
