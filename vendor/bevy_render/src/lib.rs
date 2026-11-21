@@ -554,12 +554,20 @@ fn insert_future_resources(render_creation: &RenderCreation, main_world: &mut Wo
         .cloned()
         .unwrap_or_default();
 
+    #[cfg(windows)]
+    let raw_dx12_init_settings = main_world
+        .get_resource::<renderer::RawDx12InitSettings>()
+        .cloned()
+        .unwrap_or_default();
+
     let future_resources = FutureRenderResources::default();
     let success = render_creation.create_render(
         future_resources.clone(),
         primary_window,
         #[cfg(feature = "raw_vulkan_init")]
         raw_vulkan_init_settings,
+        #[cfg(windows)]
+        raw_dx12_init_settings,
     );
     if success {
         // Note that `future_resources` is not necessarily populated here yet.

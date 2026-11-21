@@ -75,7 +75,10 @@ impl RawDx12InitSettings {
     /// - The callback must not assume instance features NGX does not provide.
     /// - NGX D3D12 has no instance-level setup, so most applications register
     ///   none; the method exists for symmetry with the Vulkan hook.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "registering a D3D12 instance callback; safety contract is documented"
+    )]
     pub unsafe fn add_create_instance_callback(
         &mut self,
         callback: impl Fn(&mut CreateDx12InstanceCallbackArgs) + Send + Sync + 'static,
@@ -90,7 +93,10 @@ impl RawDx12InitSettings {
     /// - The callback receives a raw COM pointer; it must keep it valid and
     ///   must not use it after the owning device has been destroyed.
     /// - The callback must not remove or fabricate device capabilities.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "registering a D3D12 device callback; safety contract is documented"
+    )]
     pub unsafe fn add_create_device_callback(
         &mut self,
         callback: impl Fn(&mut CreateDx12DeviceCallbackArgs) + Send + Sync + 'static,
@@ -113,5 +119,75 @@ impl RawDx12InitSettings {
         for callback in &self.create_device_callbacks {
             callback(&mut args);
         }
+    }
+
+    /// Obtain the raw `ID3D12Device*` from a live `wgpu::Device` and run all
+    /// create-device callbacks. Returns `true` when a D3D12 HAL device was
+    /// present (callbacks dispatched), `false` on any other backend — so this
+    /// is a safe no-op on Vulkan/Metal/GL devices and non-Windows targets.
+    ///
+    /// Called by [`super::initialize_renderer`] immediately after the device is
+    /// created; applications no longer have to wire this up by hand.
+    pub fn run_callbacks_for_device(&self, device: &wgpu::Device) -> bool {
+        #[cfg(windows)]
+        {
+            // SAFETY: `as_hal` borrows the live wgpu device; the returned
+            // guard is used only within this scope to read the raw COM pointer,
+            // and no wgpu resource is destroyed while callbacks hold it.
+            let hal = unsafe { device.as_hal::<wgpu::hal::api::Dx12>() };
+            if let Some(hal) = hal {
+                self.run_create_device_callbacks(hal.raw_device_ptr());
+                return true;
+            }
+        }
+        let _ = device; // used only on Windows
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn create_device_callbacks_receive_the_raw_pointer() {
+        let mut settings = RawDx12InitSettings::default();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let seen_clone = Arc::clone(&seen);
+        let expected: D3D12DevicePtr = 0x1234_5678_usize as D3D12DevicePtr;
+
+        // SAFETY: the callback only records the opaque pointer value in an
+        // atomic; it never removes/fabricates device capabilities.
+        #[expect(
+            unsafe_code,
+            reason = "registering an observation-only device callback"
+        )]
+        unsafe {
+            settings.add_create_device_callback(move |args| {
+                seen_clone.store(args.device as usize, Ordering::SeqCst);
+            });
+        }
+        settings.run_create_device_callbacks(expected);
+        assert_eq!(seen.load(Ordering::SeqCst), expected as usize);
+    }
+
+    #[test]
+    fn multiple_callbacks_all_run_in_order() {
+        let mut settings = RawDx12InitSettings::default();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for id in 0..3usize {
+            let order = Arc::clone(&order);
+            // SAFETY: observation-only callback, no capability changes.
+            #[expect(unsafe_code, reason = "registering observation-only device callbacks")]
+            unsafe {
+                settings.add_create_device_callback(move |_| order.lock().unwrap().push(id));
+            }
+        }
+        settings.run_create_device_callbacks(core::ptr::null_mut());
+        assert_eq!(*order.lock().unwrap(), vec![0, 1, 2]);
     }
 }

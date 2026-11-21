@@ -1102,11 +1102,13 @@ dependencies = [
  "blake3",
  "bytemuck",
  "derive_more",
+ "dlss_wgpu",
  "futures-lite",
  "serde_json",
  "solarik-fsr-wgpu",
  "solarik-nrd-wgpu",
  "tracing",
+ "uuid",
  "wesl",
  "wgpu",
 ]
