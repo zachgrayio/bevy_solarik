@@ -15,7 +15,7 @@ mod view_pipelines;
 pub use effects_chain::{
     ChainError, DescriptorChain, DescriptorNode, EffectChainPlan, EffectStep, FfxBackend,
     FsrEffectChainConfig, SkippedEffect, denoiser_signal_chain, desc_types,
-    fg_swapchain_descriptors_exist, resolve_effect_chain, validate_chain,
+    fg_swapchain_descriptors_exist, resolve_and_validate, resolve_effect_chain, validate_chain,
 };
 
 use crate::SolarikPlugins;

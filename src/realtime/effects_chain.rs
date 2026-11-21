@@ -12,9 +12,10 @@
 //! and performs no `ffxDispatch`/FFI call. The FFX descriptor-type ids below
 //! mirror `solarik_fsr_wgpu::effects::desc_types`; they are kept as local
 //! integers so the module always compiles (the `solarik-fsr-wgpu` dependency is
-//! optional / `fsr`-gated). When real dispatch is wired up, the resolved
-//! [`EffectChainPlan`] is what drives the sequence of `ffxDispatch` calls that
-//! GPU-runtime work (still NOT done) will issue against `VkImage`s.
+//! optional / `fsr`-gated). [`EffectChainPlan`] derives [`Resource`] so the
+//! consuming app resolves and stores the chain at startup (a real runtime
+//! decision driven by probed capabilities); GPU-runtime `ffxDispatch` against
+//! `VkImage`s — still NOT done — will consume that stored plan.
 
 use bevy_ecs::prelude::Resource;
 use core::fmt;
@@ -61,8 +62,9 @@ pub enum FfxBackend {
 }
 
 /// Per-camera config for chaining the SDK 2.4.0 effects around the FSR
-/// upscaler. Pure data; inserting this as a Bevy [`Resource`] is optional and
-/// no system here reads it yet.
+/// upscaler. Pure data; the consuming app derives it from probed capabilities
+/// and calls [`resolve_and_validate`] at startup — this crate only provides the
+/// decision layer, not the GPU dispatch.
 ///
 /// Each flag maps to one fork Cargo feature and one Definition-of-Done (DoD)
 /// quadrant from the hybrid-renderer plan (decision D21):
@@ -144,7 +146,11 @@ pub struct SkippedEffect {
 }
 
 /// The resolved, ordered, self-validating dispatch chain plan.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// Derives [`Resource`] so a consuming application can store the startup-resolved
+/// chain and let later (GPU-runtime) dispatch read it, instead of the plan being
+/// a purely local value. Resolving is pure CPU and never fails hard.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct EffectChainPlan {
     /// Ordered steps to dispatch (head -> tail of the render-graph chain).
     pub steps: Vec<EffectStep>,
@@ -401,6 +407,20 @@ pub fn validate_chain(plan: &EffectChainPlan) -> Result<(), ChainError> {
     Ok(())
 }
 
+/// Resolve a config into a validated [`EffectChainPlan`] in one call.
+///
+/// This is the entry point a consuming application's Startup system uses: it
+/// builds the ordered chain, then checks the invariants. `resolve_effect_chain`
+/// never hard-fails (unavailable effects go to [`EffectChainPlan::skipped`]), so
+/// the returned plan is always structurally sound; a `Err` here would mean a bug
+/// in the ordering logic, not a missing GPU capability. Callers should log the
+/// error and keep the never-invalid plan rather than panicking at startup.
+pub fn resolve_and_validate(config: &FsrEffectChainConfig) -> Result<EffectChainPlan, ChainError> {
+    let plan = resolve_effect_chain(config);
+    validate_chain(&plan)?;
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests {
     //! Pure-CPU tests: no GPU, DLL, window, device or FFI, mirroring the
@@ -648,7 +668,28 @@ mod tests {
         for config in &configs {
             let plan = resolve_effect_chain(config);
             assert!(validate_chain(&plan).is_ok(), "plan invalid: {plan:?}");
+            // The one-call entry point agrees with the two-step one and always
+            // returns a valid plan (resolve never hard-fails).
+            let validated =
+                resolve_and_validate(config).expect("resolver must always yield a valid plan");
+            assert_eq!(validated, plan);
         }
+    }
+
+    #[test]
+    fn resolve_and_validate_returns_err_only_for_a_broken_plan() {
+        // Inject an invariant violation: a plan with a duplicate step must be
+        // rejected by validate_chain, proving resolve_and_validate propagates
+        // ChainError rather than silently storing an invalid chain.
+        let broken = EffectChainPlan {
+            steps: vec![EffectStep::Upscale, EffectStep::Upscale],
+            backend: FfxBackend::Vulkan,
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_chain(&broken),
+            Err(ChainError::DuplicateStep(EffectStep::Upscale))
+        );
     }
 
     #[test]
