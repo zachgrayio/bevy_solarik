@@ -28,6 +28,35 @@ the pinned 310.9.1 Rust declarations. Regenerate both declarations and wrapper a
 when changing SDK versions. The SDK is separately licensed; application artifacts
 retain NVIDIA's license. This crate contains no NVIDIA native SDK binaries.
 
+## Regenerating the frame-generation bindings
+
+`src/wrapper.h` includes `nvsdk_ngx_defs_dlssg.h` (the C-safe DLSS-G definitions
+header: parameter keys, `NVSDK_NGX_DLSSG_*` enums, `PFN_NVSDK_NGX_DLSSG_*`
+callbacks), so a full SDK regeneration naturally includes FG data. The generated
+Rust declarations are checked in at `src/bindings/frame_generation.rs` and
+`include!`d by `src/frame_generation.rs::dlssg_keys` (feature `frame_generation`).
+They were produced with `rust-bindgen 0.73.2` from the public DLSS SDK v310.9.16
+headers, not transcribed by hand:
+
+```
+bindgen wrapper_dlssg.h \
+  --allowlist-item '.*DLSSG.*' \
+  --allowlist-item '.*FrameGeneration.*' --allowlist-item '.*FrameInterpolation.*' \
+  --allowlist-recursively=false \
+  --raw-line 'use crate::nvsdk_ngx::{NVSDK_NGX_Handle, NVSDK_NGX_Parameter, NVSDK_NGX_Result};' \
+  -I<ngx-include> -I<vulkan-include> -I<clang-resource> -o src/bindings/frame_generation.rs \
+  -- -x c
+```
+
+`wrapper_dlssg.h` is `#include <nvsdk_ngx_defs_dlssg.h>`; `LIBCLANG_PATH` must
+point at a libclang.dll. Regenerate on SDK upgrades. The **callable** FG helpers
+(`NGX_VK_CREATE_DLSSG` / `NGX_VK_EVALUATE_DLSSG` and their `*_Eval/_Create`
+params) live in the C++-only `nvsdk_ngx_helpers_dlssg_vk.h` /
+`nvsdk_ngx_params_dlssg.h` and are NOT exposed here (default member initializers
+cannot be included by the C-compiled `wrap_static_fns.c`); they need `__extern`
+C++ shims and NVIDIA Streamline present interception, tracked in
+`frame_generation.rs::BINDINGS_REGENERATION_REQUIRED_FOR`.
+
 ## Distributing Your App
 
 Once your app is compiled, you do not need to distribute the entire DLSS SDK, or set the `DLSS_SDK` environment variable. You only need to distribute the DLSS DLL(s) and license text as follows:

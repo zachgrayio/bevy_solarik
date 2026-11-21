@@ -4,48 +4,34 @@
 //!
 //! Everything in this module is **CPU-verifiable pure data**. It never opens a
 //! GPU device, loads a DLL, or calls any NGX function at runtime (including in
-//! tests). The NGX items it refers to are compile-time constants and type
-//! aliases taken verbatim from the crate's generated bindings in
-//! `crate::nvsdk_ngx` (`src/bindings/x86_64-pc-windows-msvc.rs` /
-//! `x86_64-unknown-linux-gnu.rs`). No C function signatures are invented.
+//! tests). No C function signatures are invented.
 //!
-//! ## What the pinned bindings actually expose
-//! The bindings were generated from `nvsdk_ngx_defs.h` / `nvsdk_ngx.h` and the
-//! Vulkan headers, **not** from NVIDIA's `nvsdk_ngx_defs_dlssg.h`. They contain:
-//! - the feature id `NVSDK_NGX_Feature_NVSDK_NGX_Feature_FrameGeneration = 11`
-//!   ([`FEATURE_FRAME_GENERATION`]),
-//! - three `FrameInterpolation.*` capability parameter keys
-//!   ([`FRAME_INTERPOLATION_PARAM_KEYS`]),
-//! - the `NVSDK_NGX_Feature_Support_Result` values (used by
-//!   [`FrameGenerationSupport::as_ngx_feature_support_result`]),
-//! - generic `NVSDK_NGX_VULKAN_CreateFeature` / `EvaluateFeature_C` /
-//!   `GetFeatureInstanceExtensionRequirements` functions, plus the opaque
-//!   `NVSDK_NGX_Handle` / `NVSDK_NGX_Parameter` types and the
-//!   `NVSDK_NGX_Feature` / `NVSDK_NGX_Result` (`c_int`) aliases.
+//! ## Bindings are regenerated, not hand-copied
+//! The pinned main bindings (`crate::nvsdk_ngx`, generated from `wrapper.h`)
+//! predate the DLSS-G headers. Rather than transcribe `#define`d strings by
+//! hand, [`dlssg_keys`] `include!`s real `rust-bindgen 0.73.2` output checked
+//! into `src/bindings/frame_generation.rs`, generated from NVIDIA's public
+//! `nvsdk_ngx_defs_dlssg.h` (DLSS SDK v310.9.16). It contains all 126
+//! `FrameGeneration.*` / `FrameInterpolation.*` / `DLSSG.*` parameter keys, the
+//! `NVSDK_NGX_DLSSG_ResourceFlags` / `EvalFlags` / `FullscreenMode` enums, and
+//! the `PFN_NVSDK_NGX_DLSSG_*` callback typedefs as real generated types.
+//! `src/wrapper.h` now includes `nvsdk_ngx_defs_dlssg.h` (it is C-safe), so a
+//! full SDK regeneration naturally includes the FG keys/enums too. See
+//! `vendor/dlss_wgpu/README.md` for the exact regeneration command.
 //!
-//! They contain **no** `FrameGeneration.*` or `DLSSG.*` parameter keys, no
-//! `NVSDK_NGX_DLSSG_*` enums/typedefs, and — critically — **no callable
-//! DLSS-G-specific create/evaluate symbol** (no `PFN_NVSDK_NGX_*FrameGeneration*`,
-//! no DLSSG create/evaluate function). The generic VULKAN create/evaluate
-//! functions do exist, but they are not Frame-Generation-specific and calling
-//! them requires a live GPU device / command buffer / loaded NGX DLL, which is
-//! outside this CPU-verifiable layer; they are intentionally not wrapped.
-//! See [`MISSING_FG_PARAMETER_KEY_NAMES`] and [`create_frame_generation`] for
-//! the documented gaps and the resulting `Unsupported` runtime path.
-//!
-//! ## Header-verified parameter keys
-//! Although the *generated* bindings omit DLSS-G keys, the parameter keys are
-//! plain string macros in NVIDIA's public `nvsdk_ngx_defs_dlssg.h` (v310.9.16).
-//! [`dlssg_keys`] reproduces them verbatim as NUL-terminated C strings so the
-//! NGX `Set`/`Get` parameter API can address them without regenerating bindings
-//! (which would require libclang + the NGX SDK headers at build time). The
-//! `NVSDK_NGX_DLSSG_*` enums are likewise reproduced as bit/int constants.
-//! Still absent are the `PFN_NVSDK_NGX_DLSSG_*` callback typedefs and any
-//! DLSS-G-specific create/evaluate *symbol* — hence the `Unsupported` path.
+//! ## What is still absent
+//! The callable DLSS-G create/evaluate helpers (`NGX_VK_CREATE_DLSSG` /
+//! `NGX_VK_EVALUATE_DLSSG` and their `*_Eval_Params` structs) live in the
+//! **C++-only** `nvsdk_ngx_helpers_dlssg_vk.h` / `nvsdk_ngx_params_dlssg.h`
+//! (default member initializers), while `wrap_static_fns.c` compiles as C —
+//! that is precisely why FG was omitted from the original `wrapper.h`. They
+//! need `__extern` C++ shims plus NVIDIA Streamline present interception.
+//! Consequently [`create_frame_generation`] / [`evaluate_frame_generation`]
+//! remain documented `Unsupported` stubs; see
+//! [`BINDINGS_REGENERATION_REQUIRED_FOR`].
 //!
 //! The module is compiled only with `feature = "frame_generation"`; under
-//! `feature = "mock"` it is empty, mirroring `crate::dx12` (there are no real
-//! FFI bindings to adapt in a mock build).
+//! `feature = "mock"` it is empty, mirroring `crate::dx12`.
 #![cfg(not(feature = "mock"))]
 
 use crate::nvsdk_ngx::{NVSDK_NGX_Feature, NVSDK_NGX_Feature_Support_Result};
@@ -80,10 +66,10 @@ pub enum FrameGenerationMode {
 ///
 /// **DATA ONLY:** every field is a plain integer / bool / enum. Constructing or
 /// inspecting this struct performs no NGX, DLL, or GPU work. Each field is
-/// annotated with the `nvsdk_ngx_defs_dlssg.h` parameter key it corresponds to.
-/// Those keys are **absent from the pinned bindings**
-/// (see [`MISSING_FG_PARAMETER_KEY_NAMES`]), so the fields are stored as raw
-/// numeric values rather than as NGX types that do not exist here.
+/// annotated with the `nvsdk_ngx_defs_dlssg.h` parameter key it corresponds to;
+/// those keys now exist as generated bindings in [`dlssg_keys`]. The fields are
+/// stored as raw numeric values because this descriptor is CPU-side policy data,
+/// not an NGX `*_Create_Params` struct (which would require a live GPU path).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameGenerationDescriptor {
     /// CPU-side policy (`Off` / `On` / `Auto`).
@@ -202,291 +188,195 @@ pub const FRAME_INTERPOLATION_PARAM_KEYS: [&[u8]; 3] = [
     PARAM_FRAME_INTERPOLATION_FEATURE_INIT_RESULT,
 ];
 
-/// Header-verified DLSS-G parameter-key constants and enums from NVIDIA's
-/// public `nvsdk_ngx_defs_dlssg.h` (DLSS SDK v310.9.16).
+/// Bindgen-generated NGX DLSS-G parameter keys, enums and callback typedefs,
+/// regenerated (not hand-copied) from NVIDIA's public `nvsdk_ngx_defs_dlssg.h`
+/// (DLSS SDK v310.9.16) with `rust-bindgen 0.73.2`. The generated file is
+/// checked in at `src/bindings/frame_generation.rs`; see
+/// `vendor/dlss_wgpu/README.md` for the regeneration command.
 ///
-/// The generated bindings in `crate::nvsdk_ngx` were produced **without** this
-/// header, so none of these `FrameGeneration.*` / `DLSSG.*` keys exist there.
-/// Each key is nevertheless a plain `#define`d string literal, so reproducing it
-/// verbatim as a NUL-terminated byte string is exact — no signature is invented
-/// and no GPU/DLL/device work is performed. `ngx_param_key_ptr` turns any of
-/// them into an ABI-safe `*const c_char` for the NGX `Set`/`Get` API.
+/// This is pure compile-time data: 126 NUL-terminated `&[u8; N]` C-string
+/// constants, 3 DLSSG enums (`c_uint` aliases + constants) and 2 PFN callback
+/// typedefs. `ngx_param_key_ptr` turns any key into an ABI-safe `*const c_char`
+/// for the NGX `Set`/`Get` parameter API. No GPU/DLL/device work is performed.
+#[allow(
+    non_upper_case_globals,
+    non_camel_case_types,
+    non_snake_case,
+    dead_code
+)]
 pub mod dlssg_keys {
-    /// Build a `&[u8]` NUL-terminated C-string constant from a string literal.
-    macro_rules! key {
-        ($name:ident, $lit:literal, $doc:literal) => {
-            #[doc = $doc]
-            pub const $name: &[u8] = concat!($lit, "\0").as_bytes();
-        };
-    }
+    include!("bindings/frame_generation.rs");
 
-    // ---- Capability / init keys (FrameGeneration.* / FrameInterpolation.*) ----
-    key!(
-        FRAME_GENERATION_AVAILABLE,
-        "FrameGeneration.Available",
-        "Max multi-frame count / availability (GetCapabilityParameters)."
-    );
-    key!(
-        FRAME_GENERATION_FEATURE_INIT_RESULT,
-        "FrameGeneration.FeatureInitResult",
-        "Result of FG feature initialization."
-    );
-    key!(
-        FRAME_GENERATION_MIN_DRIVER_VERSION_MAJOR,
-        "FrameGeneration.MinDriverVersionMajor",
-        "Minimum driver major version for FG."
-    );
-    key!(
-        FRAME_GENERATION_MIN_DRIVER_VERSION_MINOR,
-        "FrameGeneration.MinDriverVersionMinor",
-        "Minimum driver minor version for FG."
-    );
-    key!(
-        FRAME_GENERATION_NEEDS_UPDATED_DRIVER,
-        "FrameGeneration.NeedsUpdatedDriver",
-        "Whether the driver must be updated for FG."
-    );
-    key!(
-        FRAME_INTERPOLATION_AVAILABLE,
-        "FrameInterpolation.Available",
-        "Frame-interpolation availability."
-    );
-    key!(
-        FRAME_INTERPOLATION_FEATURE_INIT_RESULT,
-        "FrameInterpolation.FeatureInitResult",
-        "Frame-interpolation init result."
-    );
-    key!(
-        FRAME_INTERPOLATION_MIN_DRIVER_VERSION_MAJOR,
-        "FrameInterpolation.MinDriverVersionMajor",
-        "Frame-interpolation min driver major."
-    );
-    key!(
-        FRAME_INTERPOLATION_MIN_DRIVER_VERSION_MINOR,
-        "FrameInterpolation.MinDriverVersionMinor",
-        "Frame-interpolation min driver minor."
-    );
-    key!(
-        FRAME_INTERPOLATION_NEEDS_UPDATED_DRIVER,
-        "FrameInterpolation.NeedsUpdatedDriver",
-        "Frame-interpolation driver-update flag."
-    );
-
-    // ---- Required / optional resource tags (DLSSG.*) ----
-    key!(
-        BACKBUFFER_FORMAT,
-        "DLSSG.BackbufferFormat",
-        "Format of the backbuffer resource."
-    );
-    key!(
-        BACKBUFFER,
-        "DLSSG.Backbuffer",
-        "Input color/backbuffer resource."
-    );
-    key!(MVECS, "DLSSG.MVecs", "Input motion-vector resource.");
-    key!(DEPTH, "DLSSG.Depth", "Input depth resource.");
-    key!(HUDLESS, "DLSSG.HUDLess", "Scene color before UI/HUD (UIR).");
-    key!(UI, "DLSSG.UI", "UI color + alpha resource.");
-    key!(UI_ALPHA, "DLSSG.UIAlpha", "UI alpha-only resource.");
-    key!(
-        BIDIRECTIONAL_DISTORTION_FIELD,
-        "DLSSG.BidirectionalDistortionField",
-        "Lens-distortion mapping resource."
-    );
-    key!(
-        OUTPUT_INTERPOLATED,
-        "DLSSG.OutputInterpolated",
-        "Required output: interpolated frame."
-    );
-    key!(
-        OUTPUT_REAL,
-        "DLSSG.OutputReal",
-        "Optional output: real frame (debug text)."
-    );
-    key!(
-        OUTPUT_DISABLE_INTERPOLATION,
-        "DLSSG.OutputDisableInterpolation",
-        "Snippet hint to skip interpolation this frame."
-    );
-
-    // ---- Create-time flags, dimensions, camera / depth / quality knobs ----
-    key!(
-        RESOURCE_ALWAYS_PROVIDED_FLAGS,
-        "DLSSG.ResourceAlwaysProvidedFlags",
-        "Bitmask of always-provided resources."
-    );
-    key!(
-        RESOURCE_NEVER_PROVIDED_FLAGS,
-        "DLSSG.ResourceNeverProvidedFlags",
-        "Bitmask of never-provided resources."
-    );
-    key!(
-        WIDTH,
-        "DLSSG.Width",
-        "DLFG width (avoids generic Width conflict)."
-    );
-    key!(
-        HEIGHT,
-        "DLSSG.Height",
-        "DLFG height (avoids generic Height conflict)."
-    );
-    key!(RESET, "DLSSG.Reset", "Previous frame disconnected / reset.");
-    key!(
-        AUTOMODE_OVERRIDE_RESET,
-        "DLSSG.AutomodeOverrideReset",
-        "Automode forced Reset true."
-    );
-    key!(
-        NOT_RENDERING_GAME_FRAMES,
-        "DLSSG.NotRenderingGameFrames",
-        "App paused / menu / cutscene."
-    );
-    key!(
-        ASYNC_CREATE_ENABLED,
-        "DLSSG.AsyncCreateEnabled",
-        "Allow async internal resource creation."
-    );
-    key!(
-        DEPTH_INVERTED,
-        "DLSSG.DepthInverted",
-        "Inverted depth (near = higher)."
-    );
-    key!(
-        COLOR_BUFFERS_HDR,
-        "DLSSG.ColorBuffersHDR",
-        "Tagged color buffers are full HDR."
-    );
-    key!(
-        CAMERA_MOTION_INCLUDED,
-        "DLSSG.CameraMotionIncluded",
-        "Motion vectors include camera motion."
-    );
-    key!(
-        ORTHO_PROJECTION,
-        "DLSSG.OrthoProjection",
-        "Orthographic projection in use."
-    );
-    key!(
-        MENU_DETECTION_ENABLED,
-        "DLSSG.MenuDetectionEnabled",
-        "Enable menu detection."
-    );
-    key!(EVAL_FLAGS, "DLSSG.EvalFlags", "DLSSG_EvalFlags bitmask.");
-    key!(
-        FULLSCREEN_MODE,
-        "DLSSG.FullscreenMode",
-        "DLSSG_FullscreenMode value."
-    );
-    key!(
-        TARGET_FRAME_RATE,
-        "DLSSG.TargetFrameRate",
-        "Target frame rate for pacing."
-    );
-
-    // ---- DLSS 4 multi-frame generation ----
-    key!(
-        MULTI_FRAME_COUNT_MAX,
-        "DLSSG.MultiFrameCountMax",
-        "Max generated frames supported (capability)."
-    );
-    key!(
-        MULTI_FRAME_COUNT,
-        "DLSSG.MultiFrameCount",
-        "Total interpolated frames for the real pair (1=2x, 3=4x)."
-    );
-    key!(
-        MULTI_FRAME_INDEX,
-        "DLSSG.MultiFrameIndex",
-        "Current inner frame index (1..N)."
-    );
-    key!(
-        BACKBUFFER_FRAME_ID,
-        "DLSSG.BackbufferFrameID",
-        "Monotonic backbuffer frame id."
-    );
-    key!(
-        USER_INTERFACE_RECOMPOSITION_ENABLED,
-        "DLSSG.UserInterfaceRecompositionEnabled",
-        "Enable UIR frame generation."
-    );
-    key!(
-        LITE_CANDIDATE_BLENDING_ENABLED,
-        "DLSSG.LiteCandidateBlendingEnabled",
-        "Enable lighter candidate blending."
-    );
-
-    /// All reproduced DLSS-G parameter keys (for validation/tests).
+    /// All 126 generated parameter keys (built from the included bindings).
     pub const ALL: &[&[u8]] = &[
-        FRAME_GENERATION_AVAILABLE,
-        FRAME_GENERATION_FEATURE_INIT_RESULT,
-        FRAME_GENERATION_MIN_DRIVER_VERSION_MAJOR,
-        FRAME_GENERATION_MIN_DRIVER_VERSION_MINOR,
-        FRAME_GENERATION_NEEDS_UPDATED_DRIVER,
-        FRAME_INTERPOLATION_AVAILABLE,
-        FRAME_INTERPOLATION_FEATURE_INIT_RESULT,
-        FRAME_INTERPOLATION_MIN_DRIVER_VERSION_MAJOR,
-        FRAME_INTERPOLATION_MIN_DRIVER_VERSION_MINOR,
-        FRAME_INTERPOLATION_NEEDS_UPDATED_DRIVER,
-        BACKBUFFER_FORMAT,
-        BACKBUFFER,
-        MVECS,
-        DEPTH,
-        HUDLESS,
-        UI,
-        UI_ALPHA,
-        BIDIRECTIONAL_DISTORTION_FIELD,
-        OUTPUT_INTERPOLATED,
-        OUTPUT_REAL,
-        OUTPUT_DISABLE_INTERPOLATION,
-        RESOURCE_ALWAYS_PROVIDED_FLAGS,
-        RESOURCE_NEVER_PROVIDED_FLAGS,
-        WIDTH,
-        HEIGHT,
-        RESET,
-        AUTOMODE_OVERRIDE_RESET,
-        NOT_RENDERING_GAME_FRAMES,
-        ASYNC_CREATE_ENABLED,
-        DEPTH_INVERTED,
-        COLOR_BUFFERS_HDR,
-        CAMERA_MOTION_INCLUDED,
-        ORTHO_PROJECTION,
-        MENU_DETECTION_ENABLED,
-        EVAL_FLAGS,
-        FULLSCREEN_MODE,
-        TARGET_FRAME_RATE,
-        MULTI_FRAME_COUNT_MAX,
-        MULTI_FRAME_COUNT,
-        MULTI_FRAME_INDEX,
-        BACKBUFFER_FRAME_ID,
-        USER_INTERFACE_RECOMPOSITION_ENABLED,
-        LITE_CANDIDATE_BLENDING_ENABLED,
+        NVSDK_NGX_Parameter_FrameInterpolation_NeedsUpdatedDriver,
+        NVSDK_NGX_Parameter_FrameInterpolation_MinDriverVersionMajor,
+        NVSDK_NGX_Parameter_FrameInterpolation_FeatureInitResult,
+        NVSDK_NGX_Parameter_FrameGeneration_Available,
+        NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult,
+        NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMajor,
+        NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMinor,
+        NVSDK_NGX_Parameter_FrameGeneration_NeedsUpdatedDriver,
+        NVSDK_NGX_Parameter_FrameInterpolation_Available,
+        NVSDK_NGX_Parameter_FrameInterpolation_MinDriverVersionMinor,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferFormat,
+        NVSDK_NGX_DLSSG_Parameter_Backbuffer,
+        NVSDK_NGX_DLSSG_Parameter_MVecs,
+        NVSDK_NGX_DLSSG_Parameter_Depth,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionField,
+        NVSDK_NGX_DLSSG_Parameter_HUDLess,
+        NVSDK_NGX_DLSSG_Parameter_UI,
+        NVSDK_NGX_DLSSG_Parameter_UIAlpha,
+        NVSDK_NGX_DLSSG_Parameter_OutputInterpolated,
+        NVSDK_NGX_DLSSG_Parameter_OutputReal,
+        NVSDK_NGX_DLSSG_Parameter_ResourceAlwaysProvided_Flags,
+        NVSDK_NGX_DLSSG_Parameter_ResourceNeverProvided_Flags,
+        NVSDK_NGX_DLSSG_Parameter_Width,
+        NVSDK_NGX_DLSSG_Parameter_Height,
+        NVSDK_NGX_DLSSG_Parameter_OutputDisableInterpolation,
+        NVSDK_NGX_DLSSG_Parameter_CameraViewToClip,
+        NVSDK_NGX_DLSSG_Parameter_ClipToCameraView,
+        NVSDK_NGX_DLSSG_Parameter_ClipToLensClip,
+        NVSDK_NGX_DLSSG_Parameter_ClipToPrevClip,
+        NVSDK_NGX_DLSSG_Parameter_PrevClipToClip,
+        NVSDK_NGX_DLSSG_Parameter_JitterOffsetX,
+        NVSDK_NGX_DLSSG_Parameter_JitterOffsetY,
+        NVSDK_NGX_DLSSG_Parameter_MvecScaleX,
+        NVSDK_NGX_DLSSG_Parameter_MvecScaleY,
+        NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetX,
+        NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetY,
+        NVSDK_NGX_DLSSG_Parameter_CameraPosX,
+        NVSDK_NGX_DLSSG_Parameter_CameraPosY,
+        NVSDK_NGX_DLSSG_Parameter_CameraPosZ,
+        NVSDK_NGX_DLSSG_Parameter_CameraUpX,
+        NVSDK_NGX_DLSSG_Parameter_CameraUpY,
+        NVSDK_NGX_DLSSG_Parameter_CameraUpZ,
+        NVSDK_NGX_DLSSG_Parameter_CameraRightX,
+        NVSDK_NGX_DLSSG_Parameter_CameraRightY,
+        NVSDK_NGX_DLSSG_Parameter_CameraRightZ,
+        NVSDK_NGX_DLSSG_Parameter_CameraFwdX,
+        NVSDK_NGX_DLSSG_Parameter_CameraFwdY,
+        NVSDK_NGX_DLSSG_Parameter_CameraFwdZ,
+        NVSDK_NGX_DLSSG_Parameter_CameraNear,
+        NVSDK_NGX_DLSSG_Parameter_CameraFar,
+        NVSDK_NGX_DLSSG_Parameter_CameraFOV,
+        NVSDK_NGX_DLSSG_Parameter_CameraAspectRatio,
+        NVSDK_NGX_DLSSG_Parameter_ColorBuffersHDR,
+        NVSDK_NGX_DLSSG_Parameter_DepthInverted,
+        NVSDK_NGX_DLSSG_Parameter_CameraMotionIncluded,
+        NVSDK_NGX_DLSSG_Parameter_Reset,
+        NVSDK_NGX_DLSSG_Parameter_AutomodeOverrideReset,
+        NVSDK_NGX_DLSSG_Parameter_NotRenderingGameFrames,
+        NVSDK_NGX_DLSSG_Parameter_OrthoProjection,
+        NVSDK_NGX_DLSSG_Parameter_EstimateVRAMCallback,
+        NVSDK_NGX_DLSSG_Parameter_InvertXAxis,
+        NVSDK_NGX_DLSSG_Parameter_InvertYAxis,
+        NVSDK_NGX_DLSSG_Parameter_UserDebugText,
+        NVSDK_NGX_DLSSG_Parameter_MvecInvalidValue,
+        NVSDK_NGX_DLSSG_Parameter_MvecDilated,
+        NVSDK_NGX_DLSSG_Parameter_MvecJittered,
+        NVSDK_NGX_DLSSG_Parameter_MenuDetectionEnabled,
+        NVSDK_NGX_DLSSG_Parameter_AsyncCreateEnabled,
+        NVSDK_NGX_DLSSG_Parameter_LinearizedDepth_Scale,
+        NVSDK_NGX_DLSSG_Parameter_LinearizedDepth_NearFarPartition,
+        NVSDK_NGX_DLSSG_Parameter_MinRelativeLinearDepthObjectSeparation,
+        NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_MVecsSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_MVecsSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_MVecsSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_MVecsSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_DepthSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_DepthSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_DepthSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_DepthSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_UISubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_UISubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_UISubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_UISubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_UIAlphaSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_UIAlphaSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_UIAlphaSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_UIAlphaSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionFieldSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionFieldSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionFieldSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionFieldSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionField_LowPrecision_IsLowPrecision,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionField_LowPrecision_Bias,
+        NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionField_LowPrecision_Scale,
+        NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_OutputRealSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_OutputRealSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_OutputRealSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_OutputRealSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectBaseX,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectBaseY,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectWidth,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectHeight,
+        NVSDK_NGX_DLSSG_Parameter_InternalWidth,
+        NVSDK_NGX_DLSSG_Parameter_InternalHeight,
+        NVSDK_NGX_DLSSG_Parameter_DynamicResolution,
+        NVSDK_NGX_DLSSG_Parameter_EvalFlags,
+        NVSDK_NGX_DLSSG_Parameter_FullscreenMode,
+        NVSDK_NGX_DLSSG_Parameter_TargetFrameRate,
+        NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax,
+        NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+        NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID,
+        NVSDK_NGX_DLSSG_Parameter_UserInterfaceRecompositionEnabled,
+        NVSDK_NGX_DLSSG_Parameter_LiteCandidateBlendingEnabled,
     ];
 
-    /// `NVSDK_NGX_DLSSG_ResourceFlags` bit values (v310.9.16 header).
+    /// `NVSDK_NGX_DLSSG_ResourceFlags` bit values — aliases of the generated
+    /// constants (no values transcribed by hand).
     pub mod resource_flags {
-        pub const BACKBUFFER: u32 = 1 << 0;
-        pub const MVECS: u32 = 1 << 1;
-        pub const DEPTH: u32 = 1 << 2;
-        pub const HUDLESS: u32 = 1 << 3;
-        pub const UI: u32 = 1 << 4;
-        pub const BIDIRECTIONAL_DISTORTION_FIELD: u32 = 1 << 5;
-        pub const RESERVED6: u32 = 1 << 6;
-        pub const UI_ALPHA: u32 = 1 << 7;
-        pub const OUTPUT_INTERPOLATED: u32 = 1 << 24;
-        pub const OUTPUT_REAL: u32 = 1 << 25;
-        pub const OUTPUT_DISABLE_INTERPOLATION: u32 = 1 << 26;
+        use super::*;
+        pub const BACKBUFFER: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_Backbuffer;
+        pub const MVECS: u32 = NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_MVecs;
+        pub const DEPTH: u32 = NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_Depth;
+        pub const HUDLESS: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_HUDLess;
+        pub const UI: u32 = NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_UI;
+        pub const BIDIRECTIONAL_DISTORTION_FIELD: u32 = NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_BidirectionalDistortionField;
+        pub const RESERVED6: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_Reserved6;
+        pub const UI_ALPHA: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_UIAlpha;
+        pub const OUTPUT_INTERPOLATED: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_OutputInterpolated;
+        pub const OUTPUT_REAL: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_OutputReal;
+        pub const OUTPUT_DISABLE_INTERPOLATION: u32 =
+            NVSDK_NGX_DLSSG_ResourceFlags_NVSDK_NGX_DLSSG_ResourceFlags_OutputDisableInterpolation;
     }
 
     /// `NVSDK_NGX_DLSSG_EvalFlags` (only one value in v310.9.16).
     pub mod eval_flags {
-        pub const UPDATE_ONLY_INSIDE_EXTENTS: u32 = 1 << 0;
+        use super::*;
+        pub const UPDATE_ONLY_INSIDE_EXTENTS: u32 =
+            NVSDK_NGX_DLSSG_EvalFlags_NVSDK_NGX_DLSSG_EvalFlags_UpdateOnlyInsideExtents;
     }
 
     /// `NVSDK_NGX_DLSSG_FullscreenMode` values.
     pub mod fullscreen_mode {
-        pub const WINDOWED: u32 = 0;
-        pub const BORDERLESS: u32 = 1;
-        pub const EXCLUSIVE: u32 = 2;
+        use super::*;
+        pub const WINDOWED: u32 =
+            NVSDK_NGX_DLSSG_FullscreenMode_NVSDK_NGX_DLSSG_FullscreenMode_Windowed;
+        pub const BORDERLESS: u32 =
+            NVSDK_NGX_DLSSG_FullscreenMode_NVSDK_NGX_DLSSG_FullscreenMode_Borderless;
+        pub const EXCLUSIVE: u32 =
+            NVSDK_NGX_DLSSG_FullscreenMode_NVSDK_NGX_DLSSG_FullscreenMode_Exclusive;
     }
 }
 
@@ -504,22 +394,23 @@ pub fn ngx_param_key_ptr(key: &[u8]) -> *const std::os::raw::c_char {
     }
 }
 
-/// The DLSS-G parameter keys from NVIDIA's public `nvsdk_ngx_defs_dlssg.h` are
-/// **absent from the generated bindings** but are reproduced verbatim as
-/// NUL-terminated C strings in [`dlssg_keys`] (header-verified, not invented).
+/// All DLSS-G **data** (parameter keys, `NVSDK_NGX_DLSSG_*` enums, and the
+/// `PFN_NVSDK_NGX_DLSSG_*` callback typedefs) is now real generated bindings in
+/// [`dlssg_keys`], produced from NVIDIA's public `nvsdk_ngx_defs_dlssg.h` with
+/// bindgen 0.73.2 — nothing is transcribed by hand.
 ///
-/// What remains genuinely absent from the pinned bindings (and therefore from
-/// this crate) are the `PFN_NVSDK_NGX_DLSSG_*` callback typedefs and any
-/// DLSS-G-specific create/evaluate *function symbol*. Those require regenerating
-/// bindings against `nvsdk_ngx_defs_dlssg.h` with libclang, or integrating
-/// NVIDIA Streamline; they cannot be reconstructed from data alone. This is why
-/// [`create_frame_generation`] returns `Unsupported`.
+/// What remains genuinely absent is the **callable** DLSS-G create/evaluate
+/// layer: `NGX_VK_CREATE_DLSSG` / `NGX_VK_EVALUATE_DLSSG` and their
+/// `*_Eval_Params` / `*_Create_Params` structs. Those live in the C++-only
+/// `nvsdk_ngx_helpers_dlssg_vk.h` / `nvsdk_ngx_params_dlssg.h` (default member
+/// initializers), which cannot be included by the C-compiled `wrap_static_fns.c`.
+/// Exposing them needs `__extern` C++ shims plus NVIDIA Streamline present
+/// interception. That is why [`create_frame_generation`] returns `Unsupported`.
 pub const BINDINGS_REGENERATION_REQUIRED_FOR: &[&str] = &[
-    "PFN_NVSDK_NGX_DLSSG_GetCurrentSettingsCallback",
-    "PFN_NVSDK_NGX_DLSSG_EstimateVRAMCallback",
-    "DLSS-G-specific NVSDK_NGX_VULKAN_CreateFeature wrapper",
-    "DLSS-G-specific NVSDK_NGX_VULKAN_EvaluateFeature wrapper",
-    "NVSDK_NGX_DLSSG_ResourceFlags/EvalFlags/FullscreenMode C enums (constants provided in dlssg_keys)",
+    "NGX_VK_CREATE_DLSSG (C++ static inline helper -> __extern shim)",
+    "NGX_VK_EVALUATE_DLSSG (C++ static inline helper -> __extern shim)",
+    "NVSDK_NGX_VK_DLSSG_Eval_Params / NVSDK_NGX_DLSSG_Create_Params / Opt_Eval_Params",
+    "NGX_D3D12_CREATE_DLSSG / NGX_D3D12_EVALUATE_DLSSG (D3D12 FG swapchain)",
 ];
 
 /// Errors returned by the (currently unsupported) Frame Generation runtime
@@ -544,11 +435,12 @@ impl std::fmt::Display for FrameGenerationError {
 
 impl std::error::Error for FrameGenerationError {}
 
-const NO_FG_SYMBOL: &str = "the pinned NGX bindings were generated without \
-    nvsdk_ngx_defs_dlssg.h: they contain the FrameGeneration feature id (11), \
-    three FrameInterpolation.* capability keys and generic VULKAN \
-    CreateFeature/EvaluateFeature_C, but NO callable DLSS-G-specific \
-    create/evaluate symbol and NO DLSSG.* parameter keys; no C signature is \
+const NO_FG_SYMBOL: &str = "the DLSS-G parameter keys, enums and callback \
+    typedefs are now real generated bindings (src/bindings/frame_generation.rs), \
+    but the callable NGX_VK_CREATE_DLSSG / NGX_VK_EVALUATE_DLSSG helpers and \
+    their *_Eval/_Create params live in C++-only NGX helper headers and are not \
+    exposed through the C-compiled wrap_static_fns.c; they need __extern C++ \
+    shims + NVIDIA Streamline present interception, so no C signature is \
     invented here";
 
 impl FrameGenerationDescriptor {
@@ -691,9 +583,10 @@ mod tests {
     }
 
     #[test]
-    fn header_verified_dlssg_keys_are_valid_c_strings() {
+    fn generated_dlssg_keys_are_valid_c_strings() {
         use super::dlssg_keys as k;
-        assert_eq!(k::ALL.len(), 43);
+        // All 126 keys are real bindgen output from the public header.
+        assert_eq!(k::ALL.len(), 126);
         for key in k::ALL {
             assert!(!key.is_empty());
             assert_eq!(key.last(), Some(&0), "key must be NUL-terminated: {key:?}");
@@ -703,17 +596,20 @@ mod tests {
             );
             assert!(!ngx_param_key_ptr(key).is_null());
         }
-        // Spot-check verbatim values from NVIDIA's public header.
+        // Spot-check verbatim values from NVIDIA's public header (generated names).
         assert_eq!(
-            &k::BACKBUFFER[..k::BACKBUFFER.len() - 1],
+            &k::NVSDK_NGX_DLSSG_Parameter_Backbuffer
+                [..k::NVSDK_NGX_DLSSG_Parameter_Backbuffer.len() - 1],
             b"DLSSG.Backbuffer"
         );
         assert_eq!(
-            &k::MULTI_FRAME_COUNT[..k::MULTI_FRAME_COUNT.len() - 1],
+            &k::NVSDK_NGX_DLSSG_Parameter_MultiFrameCount
+                [..k::NVSDK_NGX_DLSSG_Parameter_MultiFrameCount.len() - 1],
             b"DLSSG.MultiFrameCount"
         );
         assert_eq!(
-            &k::FRAME_GENERATION_AVAILABLE[..k::FRAME_GENERATION_AVAILABLE.len() - 1],
+            &k::NVSDK_NGX_Parameter_FrameGeneration_Available
+                [..k::NVSDK_NGX_Parameter_FrameGeneration_Available.len() - 1],
             b"FrameGeneration.Available"
         );
         // No duplicate keys.
