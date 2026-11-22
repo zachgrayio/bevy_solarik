@@ -48,7 +48,7 @@ pub struct FrameGenerationRuntimeCapabilities {
 /// Live per-frame Frame Generation settings written by the application (e.g.
 /// from BARD's `ActiveCombo.frame_generation`) and extracted into `RenderApp`.
 #[derive(Resource, ExtractResource, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[extract_app(bevy_render::RenderApp)]
+#[extract_app(RenderApp)]
 pub struct FrameGenerationRuntimeSettings {
     /// Number of interpolated frames per real frame: `0` = Off, `1` = 2x, `2` = 3x, `3` = 4x.
     pub num_frames_to_generate: u32,
@@ -66,6 +66,17 @@ struct FsrFgRuntime {
     library: Option<solarik_fsr_wgpu::Library>,
     context: Mutex<Option<(UVec2, solarik_fsr_wgpu::effect::EffectContext)>>,
     warned: AtomicBool,
+}
+
+#[cfg(feature = "dlss_frame_generation")]
+#[derive(Resource)]
+struct StreamlineShutdownGuard;
+
+#[cfg(feature = "dlss_frame_generation")]
+impl Drop for StreamlineShutdownGuard {
+    fn drop(&mut self) {
+        solarik_streamline_wgpu::shutdown();
+    }
 }
 
 /// Plugin installing Streamline DLSS-G + Reflex and AMD FSR Frame Generation.
@@ -120,6 +131,8 @@ impl Plugin for FrameGenerationPlugin {
         }
 
         app.insert_resource(caps);
+        #[cfg(feature = "dlss_frame_generation")]
+        app.insert_resource(StreamlineShutdownGuard);
         app.sub_app_mut(RenderApp)
             .insert_resource(caps)
             .add_systems(

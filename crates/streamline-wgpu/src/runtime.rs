@@ -443,6 +443,19 @@ pub fn attach_device(
     Ok(capabilities)
 }
 
+/// Clear `wgpu-hal` swapchain hooks and call `slShutdown()` cleanly before the
+/// GPU device is destroyed at application exit.
+pub fn shutdown() {
+    #[cfg(windows)]
+    wgpu::hal::dx12::set_swapchain_hooks(wgpu::hal::dx12::Dx12SwapchainHooks::default());
+    wgpu::hal::vulkan::set_swapchain_interceptor(
+        wgpu::hal::vulkan::VulkanSwapchainInterceptor::default(),
+    );
+    if let Ok(mut guard) = global_slot().lock() {
+        let _ = guard.take();
+    }
+}
+
 /// Install the `wgpu-hal` swapchain/present interception hooks for the active
 /// backend (DX12 `slUpgradeInterface` or Vulkan `sl.interposer.dll` proxy fns).
 pub fn install_swapchain_interception() {

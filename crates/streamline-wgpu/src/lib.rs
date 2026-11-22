@@ -15,5 +15,5 @@ mod runtime;
 
 pub use runtime::{
     Error, FrameGenCapabilities, FrameGenState, Streamline, attach_device, current_capabilities,
-    install_swapchain_interception, is_ready, record_frame,
+    install_swapchain_interception, is_ready, record_frame, shutdown,
 };

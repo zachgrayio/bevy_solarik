@@ -65,7 +65,9 @@ impl FfxApiHeader {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Dimensions2D {
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
 }
 
@@ -73,7 +75,9 @@ pub struct Dimensions2D {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct FloatCoords2D {
+    /// Horizontal coordinate.
     pub x: f32,
+    /// Vertical coordinate.
     pub y: f32,
 }
 
@@ -81,13 +85,21 @@ pub struct FloatCoords2D {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct ResourceDescription {
+    /// Resource dimensionality (`FfxApiResourceType`).
     pub resource_type: u32,
+    /// Surface format (`FfxApiSurfaceFormat`).
     pub format: u32,
+    /// Width in pixels (or byte size for buffers).
     pub width: u32,
+    /// Height in pixels (or byte stride for buffers).
     pub height: u32,
+    /// Depth / array slice count.
     pub depth: u32,
+    /// Mip level count.
     pub mip_count: u32,
+    /// Resource flags.
     pub flags: u32,
+    /// Resource usage bitmask (`FfxApiResourceUsage`).
     pub usage: u32,
 }
 
@@ -96,8 +108,11 @@ pub struct ResourceDescription {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Resource {
+    /// Native `VkImage` or `ID3D12Resource*` handle.
     pub resource: *mut c_void,
+    /// Resource dimensions, format and usage metadata.
     pub description: ResourceDescription,
+    /// Current resource state (`FfxApiResourceState`).
     pub state: u32,
 }
 
