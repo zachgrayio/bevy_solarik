@@ -7,60 +7,148 @@ use std::{
 use uuid::Uuid;
 use wgpu::{Device, hal::api::Vulkan};
 
-/// Application-wide DLSS object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SdkBackend {
+    Vulkan,
+    #[cfg(all(windows, feature = "dx12"))]
+    Dx12 {
+        owns_shutdown: bool,
+    },
+}
+
+/// Application-wide DLSS object (supports both Vulkan and Windows D3D12).
 pub struct DlssSdk {
     pub(crate) parameters: *mut NVSDK_NGX_Parameter,
     pub(crate) device: Device,
+    pub(crate) backend: SdkBackend,
 }
 
 impl DlssSdk {
-    /// Creates the DLSS SDK.
+    /// Creates the DLSS SDK for the active wgpu backend (Vulkan or Windows D3D12).
     ///
     /// This should be done once per application.
     pub fn new(project_id: Uuid, device: Device) -> Result<Arc<Mutex<Self>>, DlssError> {
         check_for_updates(project_id);
 
-        let mut parameters = ptr::null_mut();
-        unsafe {
-            let hal_device = device.as_hal::<Vulkan>().unwrap();
-            let shared_instance = hal_device.shared_instance();
-            let raw_instance = shared_instance.raw_instance();
+        if unsafe { device.as_hal::<Vulkan>() }.is_some() {
+            let mut parameters = ptr::null_mut();
+            unsafe {
+                let hal_device = device.as_hal::<Vulkan>().unwrap();
+                let shared_instance = hal_device.shared_instance();
+                let raw_instance = shared_instance.raw_instance();
 
-            with_feature_info(project_id, Default::default(), |feature_info| {
-                check_ngx_result(NVSDK_NGX_VULKAN_Init_with_ProjectID(
-                    feature_info.Identifier.v.ProjectDesc.ProjectId,
-                    NVSDK_NGX_EngineType_NVSDK_NGX_ENGINE_TYPE_CUSTOM,
-                    feature_info.Identifier.v.ProjectDesc.EngineVersion,
-                    feature_info.ApplicationDataPath,
-                    raw_instance.handle(),
-                    hal_device.raw_physical_device(),
-                    hal_device.raw_device().handle(),
-                    shared_instance.entry().static_fn().get_instance_proc_addr,
-                    raw_instance.fp_v1_0().get_device_proc_addr,
-                    feature_info.FeatureInfo,
-                    NVSDK_NGX_Version_NVSDK_NGX_Version_API,
-                ))
-            })?;
+                with_feature_info(project_id, Default::default(), |feature_info| {
+                    check_ngx_result(NVSDK_NGX_VULKAN_Init_with_ProjectID(
+                        feature_info.Identifier.v.ProjectDesc.ProjectId,
+                        NVSDK_NGX_EngineType_NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+                        feature_info.Identifier.v.ProjectDesc.EngineVersion,
+                        feature_info.ApplicationDataPath,
+                        raw_instance.handle(),
+                        hal_device.raw_physical_device(),
+                        hal_device.raw_device().handle(),
+                        shared_instance.entry().static_fn().get_instance_proc_addr,
+                        raw_instance.fp_v1_0().get_device_proc_addr,
+                        feature_info.FeatureInfo,
+                        NVSDK_NGX_Version_NVSDK_NGX_Version_API,
+                    ))
+                })?;
 
-            check_ngx_result(NVSDK_NGX_VULKAN_GetCapabilityParameters(&mut parameters))?;
+                check_ngx_result(NVSDK_NGX_VULKAN_GetCapabilityParameters(&mut parameters))?;
 
-            let mut dlss_supported = 0;
-            let result = check_ngx_result(NVSDK_NGX_Parameter_GetI(
+                let mut dlss_supported = 0;
+                let result = check_ngx_result(NVSDK_NGX_Parameter_GetI(
+                    parameters,
+                    NVSDK_NGX_Parameter_SuperSampling_Available.as_ptr().cast(),
+                    &mut dlss_supported,
+                ));
+                if result.is_err() {
+                    check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(parameters))?;
+                    result?;
+                }
+                if dlss_supported == 0 {
+                    check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(parameters))?;
+                    return Err(DlssError::FeatureNotSupported);
+                }
+            }
+
+            return Ok(Arc::new(Mutex::new(Self {
                 parameters,
-                NVSDK_NGX_Parameter_SuperSampling_Available.as_ptr().cast(),
-                &mut dlss_supported,
-            ));
-            if result.is_err() {
-                check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(parameters))?;
-                result?;
-            }
-            if dlss_supported == 0 {
-                check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(parameters))?;
-                return Err(DlssError::FeatureNotSupported);
-            }
+                device,
+                backend: SdkBackend::Vulkan,
+            })));
         }
 
-        Ok(Arc::new(Mutex::new(Self { parameters, device })))
+        #[cfg(all(windows, feature = "dx12"))]
+        if let Some(hal_device) = unsafe { device.as_hal::<wgpu::hal::api::Dx12>() } {
+            let raw_device = hal_device.raw_device_ptr().cast::<ID3D12Device>();
+            let owns_shutdown = if crate::dx12::is_d3d12_ngx_initialized() {
+                false
+            } else {
+                with_feature_info(project_id, Default::default(), |feature_info| unsafe {
+                    check_ngx_result(NVSDK_NGX_D3D12_Init_with_ProjectID(
+                        feature_info.Identifier.v.ProjectDesc.ProjectId,
+                        NVSDK_NGX_EngineType_NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+                        feature_info.Identifier.v.ProjectDesc.EngineVersion,
+                        feature_info.ApplicationDataPath,
+                        raw_device,
+                        feature_info.FeatureInfo,
+                        NVSDK_NGX_Version_NVSDK_NGX_Version_API,
+                    ))
+                })?;
+                true
+            };
+
+            let mut parameters = ptr::null_mut();
+            unsafe {
+                check_ngx_result(NVSDK_NGX_D3D12_GetCapabilityParameters(&mut parameters))?;
+
+                let mut dlss_supported = 0;
+                let result = check_ngx_result(NVSDK_NGX_Parameter_GetI(
+                    parameters,
+                    NVSDK_NGX_Parameter_SuperSampling_Available.as_ptr().cast(),
+                    &mut dlss_supported,
+                ));
+                if result.is_err() {
+                    let _ = NVSDK_NGX_D3D12_DestroyParameters(parameters);
+                    if owns_shutdown {
+                        let _ = NVSDK_NGX_D3D12_Shutdown1(raw_device);
+                    }
+                    result?;
+                }
+                if dlss_supported == 0 {
+                    let _ = NVSDK_NGX_D3D12_DestroyParameters(parameters);
+                    if owns_shutdown {
+                        let _ = NVSDK_NGX_D3D12_Shutdown1(raw_device);
+                    }
+                    return Err(DlssError::FeatureNotSupported);
+                }
+            }
+
+            drop(hal_device);
+            return Ok(Arc::new(Mutex::new(Self {
+                parameters,
+                device,
+                backend: SdkBackend::Dx12 { owns_shutdown },
+            })));
+        }
+
+        Err(DlssError::FeatureNotSupported)
+    }
+
+    /// Whether DLSS Ray Reconstruction (DLSSD) is supported by the active NGX
+    /// device/driver (works on both Vulkan and DX12).
+    pub fn ray_reconstruction_supported(&self) -> bool {
+        let mut supported = 0;
+        let ok = unsafe {
+            check_ngx_result(NVSDK_NGX_Parameter_GetI(
+                self.parameters,
+                NVSDK_NGX_Parameter_SuperSamplingDenoising_Available
+                    .as_ptr()
+                    .cast(),
+                &mut supported,
+            ))
+        };
+        ok.is_ok() && supported != 0
     }
 
     /// Returns the number of bytes of VRAM allocated by DLSS.
@@ -94,17 +182,33 @@ fn check_for_updates(project_id: Uuid) {
 
 impl Drop for DlssSdk {
     fn drop(&mut self) {
-        unsafe {
-            let hal_device = self.device.as_hal::<Vulkan>().unwrap();
-            hal_device
-                .raw_device()
-                .device_wait_idle()
-                .expect("Failed to wait for idle device when destroying DlssSdk");
+        match self.backend {
+            SdkBackend::Vulkan => unsafe {
+                let hal_device = self.device.as_hal::<Vulkan>().unwrap();
+                hal_device
+                    .raw_device()
+                    .device_wait_idle()
+                    .expect("Failed to wait for idle device when destroying DlssSdk");
 
-            check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(self.parameters))
-                .expect("Failed to destroy DlssSdk parameters");
-            check_ngx_result(NVSDK_NGX_VULKAN_Shutdown1(hal_device.raw_device().handle()))
-                .expect("Failed to destroy DlssSdk");
+                check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(self.parameters))
+                    .expect("Failed to destroy DlssSdk parameters");
+                check_ngx_result(NVSDK_NGX_VULKAN_Shutdown1(hal_device.raw_device().handle()))
+                    .expect("Failed to destroy DlssSdk");
+            },
+            #[cfg(all(windows, feature = "dx12"))]
+            SdkBackend::Dx12 { owns_shutdown } => {
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                unsafe {
+                    let _ = check_ngx_result(NVSDK_NGX_D3D12_DestroyParameters(self.parameters));
+                    if owns_shutdown
+                        && let Some(hal_device) = self.device.as_hal::<wgpu::hal::api::Dx12>()
+                    {
+                        let _ = check_ngx_result(NVSDK_NGX_D3D12_Shutdown1(
+                            hal_device.raw_device_ptr().cast::<ID3D12Device>(),
+                        ));
+                    }
+                }
+            }
         }
     }
 }

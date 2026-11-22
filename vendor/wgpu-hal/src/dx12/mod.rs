@@ -1006,6 +1006,13 @@ pub struct CommandEncoder {
 unsafe impl Send for CommandEncoder {}
 unsafe impl Sync for CommandEncoder {}
 
+impl CommandEncoder {
+    /// Raw `ID3D12GraphicsCommandList*` currently open for recording, if any.
+    pub fn raw_command_list_ptr(&self) -> Option<*mut ffi::c_void> {
+        self.list.as_ref().map(Interface::as_raw)
+    }
+}
+
 impl fmt::Debug for CommandEncoder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CommandEncoder")
@@ -1079,6 +1086,11 @@ pub struct Texture {
 impl Texture {
     pub unsafe fn raw_resource(&self) -> &Direct3D12::ID3D12Resource {
         &self.resource
+    }
+
+    /// Raw `ID3D12Resource*` for native interop (DLSS NGX / FidelityFX DX12).
+    pub fn raw_resource_ptr(&self) -> *mut ffi::c_void {
+        Interface::as_raw(&self.resource)
     }
 
     /// Pin the D3D12 plane slice for every view and copy derived from

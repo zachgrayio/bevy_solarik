@@ -98,19 +98,39 @@ impl DlssRayReconstruction {
         });
 
         let mut feature = ptr::null_mut();
-        unsafe {
-            let hal_device = device.as_hal::<Vulkan>().unwrap();
-            command_encoder.as_hal_mut::<Vulkan, _, _>(|command_encoder| {
-                check_ngx_result(NGX_VULKAN_CREATE_DLSSD_EXT1(
-                    hal_device.raw_device().handle(),
-                    command_encoder.unwrap().raw_handle(),
-                    1,
-                    1,
-                    &mut feature,
-                    locked_sdk.parameters,
-                    &mut create_params,
-                ))
-            })?
+        match locked_sdk.backend {
+            crate::sdk::SdkBackend::Vulkan => unsafe {
+                let hal_device = device.as_hal::<Vulkan>().unwrap();
+                command_encoder.as_hal_mut::<Vulkan, _, _>(|command_encoder| {
+                    check_ngx_result(NGX_VULKAN_CREATE_DLSSD_EXT1(
+                        hal_device.raw_device().handle(),
+                        command_encoder.unwrap().raw_handle(),
+                        1,
+                        1,
+                        &mut feature,
+                        locked_sdk.parameters,
+                        &mut create_params,
+                    ))
+                })?
+            },
+            #[cfg(all(windows, feature = "dx12"))]
+            crate::sdk::SdkBackend::Dx12 { .. } => unsafe {
+                command_encoder.as_hal_mut::<wgpu::hal::api::Dx12, _, _>(|command_encoder| {
+                    let cmd_list = command_encoder
+                        .unwrap()
+                        .raw_command_list_ptr()
+                        .unwrap()
+                        .cast::<ID3D12GraphicsCommandList>();
+                    check_ngx_result(NGX_D3D12_CREATE_DLSSD_EXT(
+                        cmd_list,
+                        1,
+                        1,
+                        &mut feature,
+                        locked_sdk.parameters,
+                        &mut create_params,
+                    ))
+                })?
+            },
         }
 
         queue.submit([command_encoder.finish()]);
@@ -147,6 +167,107 @@ impl DlssRayReconstruction {
         let partial_texture_size = render_parameters
             .partial_texture_size
             .unwrap_or(self.render_resolution);
+
+        #[cfg(all(windows, feature = "dx12"))]
+        if matches!(sdk.backend, crate::sdk::SdkBackend::Dx12 { .. }) {
+            let mut world_to_view = None;
+            let mut view_to_clip = None;
+            let mut eval_params: NVSDK_NGX_D3D12_DLSSD_Eval_Params = unsafe { std::mem::zeroed() };
+            eval_params.pInDiffuseAlbedo = texture_to_d3d12(render_parameters.diffuse_albedo);
+            eval_params.pInSpecularAlbedo = texture_to_d3d12(render_parameters.specular_albedo);
+            eval_params.pInNormals = texture_to_d3d12(render_parameters.normals);
+            if let Some(r) = render_parameters.roughness {
+                eval_params.pInRoughness = texture_to_d3d12(r);
+            }
+            eval_params.pInColor = texture_to_d3d12(render_parameters.color);
+            eval_params.pInOutput = texture_to_d3d12(render_parameters.dlss_output);
+            eval_params.pInDepth = texture_to_d3d12(render_parameters.depth);
+            eval_params.pInMotionVectors = texture_to_d3d12(render_parameters.motion_vectors);
+            if let Some(m) = render_parameters.responsivity_mask {
+                eval_params.pInResponsivityMask = texture_to_d3d12(m);
+            }
+            if let Some(a) = render_parameters.alpha {
+                eval_params.pInAlpha = texture_to_d3d12(a);
+            }
+            if let Some(oa) = render_parameters.dlss_output_alpha {
+                eval_params.pInOutputAlpha = texture_to_d3d12(oa);
+            }
+            if let Some(c) = render_parameters.color_before_transparency {
+                eval_params.pInColorBeforeTransparency = texture_to_d3d12(c);
+            }
+            if let Some(g) = render_parameters.depth_of_field_guide {
+                eval_params.pInDepthOfFieldGuide = texture_to_d3d12(g);
+            }
+            if let Some(g) = render_parameters.screen_space_subsurface_scattering_guide {
+                eval_params.pInScreenSpaceSubsurfaceScatteringGuide = texture_to_d3d12(g);
+            }
+            match render_parameters.transparency_overlay {
+                Some(DlssRayReconstructionTransparencyOverlay::Premultiplied(layer)) => {
+                    eval_params.pInTransparencyLayer = texture_to_d3d12(layer);
+                }
+                Some(DlssRayReconstructionTransparencyOverlay::Separate { color, opacity }) => {
+                    eval_params.pInTransparencyLayer = texture_to_d3d12(color);
+                    eval_params.pInTransparencyLayerOpacity = texture_to_d3d12(opacity);
+                }
+                None => {}
+            }
+            match render_parameters.specular_guide {
+                DlssRayReconstructionSpecularGuide::SpecularMotionVectors(mv) => {
+                    eval_params.pInMotionVectorsReflections = texture_to_d3d12(mv);
+                }
+                DlssRayReconstructionSpecularGuide::SpecularHitDistance {
+                    texture_view,
+                    world_to_view_rows_array,
+                    view_to_clip_rows_array,
+                } => {
+                    eval_params.pInSpecularHitDistance = texture_to_d3d12(texture_view);
+                    world_to_view = Some(world_to_view_rows_array);
+                    view_to_clip = Some(view_to_clip_rows_array);
+                }
+            }
+            eval_params.pInWorldToViewMatrix = world_to_view
+                .as_mut()
+                .map_or(ptr::null_mut(), |m| ptr::from_mut(m).cast());
+            eval_params.pInViewToClipMatrix = view_to_clip
+                .as_mut()
+                .map_or(ptr::null_mut(), |m| ptr::from_mut(m).cast());
+            eval_params.InJitterOffsetX = render_parameters.jitter_offset[0];
+            eval_params.InJitterOffsetY = render_parameters.jitter_offset[1];
+            eval_params.InRenderSubrectDimensions = NVSDK_NGX_Dimensions {
+                Width: partial_texture_size[0],
+                Height: partial_texture_size[1],
+            };
+            eval_params.InReset = render_parameters.reset as _;
+            eval_params.InMVScaleX = render_parameters.motion_vector_scale.unwrap_or([1.0, 1.0])[0];
+            eval_params.InMVScaleY = render_parameters.motion_vector_scale.unwrap_or([1.0, 1.0])[1];
+            eval_params.InToneMapperType = NVSDK_NGX_ToneMapperType_NVSDK_NGX_TONEMAPPER_STRING;
+
+            command_encoder.transition_resources(iter::empty(), render_parameters.barrier_list());
+
+            let mut dlss_command_encoder =
+                self.device
+                    .create_command_encoder(&CommandEncoderDescriptor {
+                        label: Some("dlss_ray_reconstruction"),
+                    });
+            unsafe {
+                dlss_command_encoder.as_hal_mut::<wgpu::hal::api::Dx12, _, _>(
+                    |command_encoder| {
+                        let cmd_list = command_encoder
+                            .unwrap()
+                            .raw_command_list_ptr()
+                            .unwrap()
+                            .cast::<ID3D12GraphicsCommandList>();
+                        check_ngx_result(NGX_D3D12_EVALUATE_DLSSD_EXT(
+                            cmd_list,
+                            self.feature,
+                            sdk.parameters,
+                            &mut eval_params,
+                        ))
+                    },
+                )?;
+            }
+            return Ok(dlss_command_encoder.finish());
+        }
 
         // NGX reads these through raw pointers during EvaluateFeature. The bindings
         // must stay alive until the evaluate call below.
@@ -393,16 +514,38 @@ impl DlssRayReconstruction {
 
 impl Drop for DlssRayReconstruction {
     fn drop(&mut self) {
-        unsafe {
-            let hal_device = self.device.as_hal::<Vulkan>().unwrap();
-            hal_device
-                .raw_device()
-                .device_wait_idle()
-                .expect("Failed to wait for idle device when destroying DlssRayReconstruction");
+        let backend = self.sdk.lock().unwrap().backend;
+        match backend {
+            crate::sdk::SdkBackend::Vulkan => unsafe {
+                let hal_device = self.device.as_hal::<Vulkan>().unwrap();
+                hal_device
+                    .raw_device()
+                    .device_wait_idle()
+                    .expect("Failed to wait for idle device when destroying DlssRayReconstruction");
 
-            check_ngx_result(NVSDK_NGX_VULKAN_ReleaseFeature(self.feature))
-                .expect("Failed to destroy DlssRayReconstruction feature");
+                check_ngx_result(NVSDK_NGX_VULKAN_ReleaseFeature(self.feature))
+                    .expect("Failed to destroy DlssRayReconstruction feature");
+            },
+            #[cfg(all(windows, feature = "dx12"))]
+            crate::sdk::SdkBackend::Dx12 { .. } => {
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                unsafe {
+                    let _ = check_ngx_result(NVSDK_NGX_D3D12_ReleaseFeature(self.feature));
+                }
+            }
         }
+    }
+}
+
+#[cfg(all(windows, feature = "dx12"))]
+fn texture_to_d3d12(texture_view: &TextureView) -> *mut ID3D12Resource {
+    unsafe {
+        texture_view
+            .texture()
+            .as_hal::<wgpu::hal::api::Dx12>()
+            .unwrap()
+            .raw_resource_ptr()
+            .cast::<ID3D12Resource>()
     }
 }
 

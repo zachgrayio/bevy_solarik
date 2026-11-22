@@ -470,6 +470,11 @@ impl super::Device {
         &self.present_queue
     }
 
+    /// Raw `ID3D12CommandQueue*` for native interop (FidelityFX / Streamline DX12).
+    pub fn raw_queue_ptr(&self) -> *mut ffi::c_void {
+        windows_core::Interface::as_raw(&self.present_queue)
+    }
+
     pub unsafe fn texture_from_raw(
         resource: Direct3D12::ID3D12Resource,
         format: wgt::TextureFormat,
