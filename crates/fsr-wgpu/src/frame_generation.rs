@@ -79,13 +79,18 @@ fn install_provider_messages(library: &Library) {
         effects::effect_ids::FRAMEGENERATIONSWAPCHAIN,
         effects::effect_ids::FRAMEGENERATIONSWAPCHAIN_VK,
     ] {
-        let desc = ConfigureDescGlobalDebug {
-            header: FfxApiHeader::new(7),
-            effect_id: u64::from(effect_id),
-            fp_message: Some(log_provider_message),
-            debug_level: 2,
-        };
-        let _ = library.module.configure(ptr::null_mut(), &desc.header);
+        let desc = provider_debug_desc(effect_id);
+        let status = library.module.configure(ptr::null_mut(), &desc.header);
+        tracing::debug!(effect_id, status, "FidelityFX global debug messages");
+    }
+}
+
+fn provider_debug_desc(effect_id: u32) -> ConfigureDescGlobalDebug {
+    ConfigureDescGlobalDebug {
+        header: FfxApiHeader::new(7),
+        effect_id: u64::from(effect_id),
+        fp_message: Some(log_provider_message),
+        debug_level: 2,
     }
 }
 
@@ -199,8 +204,37 @@ unsafe extern "C" fn dispatch_generated_frames(
         GENERATED_TOTAL.fetch_add(u64::from(frames), Ordering::Relaxed);
     } else {
         target.failed.fetch_add(1, Ordering::Relaxed);
+        if FAILED_TOTAL.fetch_add(1, Ordering::Relaxed) == 0 {
+            tracing::warn!(
+                status,
+                frames,
+                "FSR frame-generation dispatch rejected at present"
+            );
+        }
     }
     status
+}
+
+/// Present-time dispatches the provider rejected, across contexts.
+static FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Successful per-frame configures, across contexts (should track rendered frames 1:1).
+static CONFIGURES: AtomicU64 = AtomicU64::new(0);
+/// Rendered frames between present-statistics log lines.
+const STATS_LOG_INTERVAL: u64 = 600;
+
+/// Periodic present statistics, so frame-generation health is visible in the log.
+fn log_present_stats(rendered: u64) {
+    if !rendered.is_multiple_of(STATS_LOG_INTERVAL) {
+        return;
+    }
+    tracing::debug!(
+        rendered,
+        presented = PRESENTED.load(Ordering::Relaxed),
+        generated = GENERATED_TOTAL.load(Ordering::Relaxed),
+        failed = FAILED_TOTAL.load(Ordering::Relaxed),
+        configures = CONFIGURES.load(Ordering::Relaxed),
+        "FSR frame-generation present statistics"
+    );
 }
 
 /// Per-frame inputs for `ffxDispatchDescFrameGenerationPrepareV2`.
@@ -349,6 +383,15 @@ impl FrameGenerationContext {
             camera_forward: params.camera_forward,
         };
         self.effect.dispatch_wgpu(encoder, &mut desc)
+    }
+
+    /// Attach the provider's error/warning messages to this context as well
+    /// (the null-context global configure may precede the provider's load).
+    pub fn route_provider_messages(&mut self) {
+        let desc = provider_debug_desc(effects::effect_ids::FRAMEGENERATION);
+        if let Err(error) = self.effect.configure(&desc.header) {
+            tracing::debug!(%error, "FidelityFX debug messages not accepted by the context");
+        }
     }
 
     /// Frames the swapchain generated through this context so far.
@@ -585,7 +628,7 @@ fn count_present_total(total: u64) {
     if !ACTIVE.load(Ordering::Acquire) {
         return;
     }
-    RENDERED.fetch_add(1, Ordering::Relaxed);
+    let rendered = RENDERED.fetch_add(1, Ordering::Relaxed) + 1;
     let previous = LAST_PRESENT_COUNT.swap(total, Ordering::Relaxed);
     let delta = if total >= previous {
         total - previous
@@ -593,6 +636,7 @@ fn count_present_total(total: u64) {
         total
     };
     PRESENTED.fetch_add(delta, Ordering::Relaxed);
+    log_present_stats(rendered);
 }
 
 #[cfg(windows)]
@@ -644,6 +688,9 @@ pub fn record_frame(
     let Some(proxy) = state.swapchain.as_ref().map(|(_, proxy)| proxy.0) else {
         return Ok(FrameStatus::NoSwapchain);
     };
+    // `backBufferFormat` must equal the swapchain images' storage format, which is
+    // UNORM on both backends (DXGI stores UNORM; the Vulkan provider is handed
+    // the UNORM equivalent, see `provider_swapchain_info`).
     let key = FrameKey {
         display: inputs.display_size,
         max_render: inputs.max_render_size,
@@ -670,8 +717,9 @@ pub fn record_frame(
         let created =
             FrameGenerationContext::create(&state.library, BackendDevice::from_wgpu(device)?, &cfg);
         match created {
-            Ok(context) => {
+            Ok(mut context) => {
                 tracing::info!("FSR frame-generation context created");
+                context.route_provider_messages();
                 state.failed_key = None;
                 state.frame_generation = Some((key, context));
             }
@@ -688,7 +736,7 @@ pub fn record_frame(
     state.next_frame_id += 1;
     let first_configure = FIRST_CONFIGURE.swap(false, Ordering::Relaxed);
     if first_configure {
-        tracing::info!("first FSR frame-generation configure");
+        tracing::debug!("first FSR frame-generation configure");
     }
     context.configure(
         proxy,
@@ -697,13 +745,14 @@ pub fn record_frame(
         frame_id,
         inputs.dispatch_flags,
     )?;
+    CONFIGURES.fetch_add(1, Ordering::Relaxed);
     if first_configure {
-        tracing::info!("first FSR frame-generation configure returned");
+        tracing::debug!("first FSR frame-generation configure returned");
     }
     if inputs.enabled {
         let first_prepare = FIRST_PREPARE.swap(false, Ordering::Relaxed);
         if first_prepare {
-            tracing::info!("first FSR frame-generation prepare");
+            tracing::debug!("first FSR frame-generation prepare");
         }
         context.prepare(
             encoder,
@@ -713,7 +762,7 @@ pub fn record_frame(
             },
         )?;
         if first_prepare {
-            tracing::info!("first FSR frame-generation prepare recorded");
+            tracing::debug!("first FSR frame-generation prepare recorded");
         }
     }
     Ok(FrameStatus::Configured {
@@ -776,9 +825,10 @@ impl QueuePlan {
 }
 
 /// Choose distinct queues for the frame-generation swapchain, or `None` when the
-/// device cannot provide them. The present queue prefers another graphics or
-/// compute family so composition runs off the game queue; async compute prefers
-/// a compute-only family; image acquire prefers a transfer-only family.
+/// device cannot provide them. The present queue prefers a graphics+compute family
+/// (the game's own when it has spare queues): the provider then composes on the
+/// present queue and needs no queue-family ownership transfer for presents. Async
+/// compute prefers a compute-only family; image acquire a transfer-only family.
 pub fn plan_vulkan_queues(families: &[QueueFamily], game: QueueSlot) -> Option<QueuePlan> {
     let mut used = vec![0u32; families.len()];
     *used.get_mut(game.family as usize)? = game.index + 1;
@@ -794,14 +844,13 @@ pub fn plan_vulkan_queues(families: &[QueueFamily], game: QueueSlot) -> Option<Q
     };
     let graphics_or_compute = vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE;
     let present =
-        take(&|f, q| f != game.family && q.present && q.flags.intersects(graphics_or_compute))
-            .or_else(|| {
-                take(&|_, q| {
-                    q.present
-                        && q.flags
-                            .intersects(graphics_or_compute | vk::QueueFlags::TRANSFER)
-                })
-            })?;
+        take(&|_, q| q.present && q.flags.contains(graphics_or_compute)).or_else(|| {
+            take(&|_, q| {
+                q.present
+                    && q.flags
+                        .intersects(graphics_or_compute | vk::QueueFlags::TRANSFER)
+            })
+        })?;
     let async_compute = take(&|_, q| {
         q.flags.contains(vk::QueueFlags::COMPUTE) && !q.flags.contains(vk::QueueFlags::GRAPHICS)
     })
@@ -864,6 +913,21 @@ pub fn register_frame_generation_queues(
         .collect();
     let plan = plan_vulkan_queues(&families, WGPU_GAME_QUEUE);
     tracing::info!(?families, ?plan, "Vulkan queues for FSR frame generation");
+    // The provider writes generated frames with storage writes into images of the
+    // swapchain's format (see `provider_swapchain_info`).
+    let storage = |format| {
+        // SAFETY: valid physical device; format properties are a pure query.
+        unsafe { instance.get_physical_device_format_properties(physical_device, format) }
+            .optimal_tiling_features
+            .contains(vk::FormatFeatureFlags::STORAGE_IMAGE)
+    };
+    tracing::debug!(
+        r8g8b8a8_srgb = storage(vk::Format::R8G8B8A8_SRGB),
+        b8g8r8a8_srgb = storage(vk::Format::B8G8R8A8_SRGB),
+        r8g8b8a8_unorm = storage(vk::Format::R8G8B8A8_UNORM),
+        b8g8r8a8_unorm = storage(vk::Format::B8G8R8A8_UNORM),
+        "Vulkan storage-image support for swapchain formats"
+    );
     let plan = plan?;
     for (family, count) in plan
         .queue_counts(WGPU_GAME_QUEUE, families.len())
@@ -1108,6 +1172,28 @@ impl SwapchainContext {
     }
 }
 
+/// The provider creates every swapchain-sized image (replacement backbuffers,
+/// interpolation and composition outputs) in the swapchain's format with STORAGE
+/// usage and no mutable-format flag (`FrameInterpolationSwapchainVK.cpp`). sRGB
+/// formats are not storage-capable, so generated frames came out black; the
+/// provider gets the UNORM equivalent instead. wgpu still renders through sRGB
+/// views, exactly as on DX12 where DXGI swapchains store UNORM. A create info that
+/// already carries a format list (`pNext`) is left unchanged.
+fn provider_swapchain_info(info: vk::SwapchainCreateInfoKHR<'_>) -> vk::SwapchainCreateInfoKHR<'_> {
+    if !info.p_next.is_null() {
+        return info;
+    }
+    let image_format = match info.image_format {
+        vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_UNORM,
+        vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_UNORM,
+        other => other,
+    };
+    vk::SwapchainCreateInfoKHR {
+        image_format,
+        ..info
+    }
+}
+
 unsafe extern "system" fn vk_create_swapchain(
     device: vk::Device,
     create_info: *const vk::SwapchainCreateInfoKHR<'_>,
@@ -1125,6 +1211,8 @@ unsafe extern "system" fn vk_create_swapchain(
         // SAFETY: forwarding wgpu-hal's arguments to the real entry point.
         return unsafe { (vulkan.real.create_swapchain_khr)(device, create_info, allocator, out) };
     }
+    // SAFETY: wgpu-hal passes a valid create info for this device.
+    let provider_info = provider_swapchain_info(unsafe { *create_info });
     if let Some(replacement) = vulkan.routed(vulkan.fg_swapchain) {
         // Resize / present-mode change: recreate in place. The handle stays the
         // same and frame generation restarts for the new size.
@@ -1135,7 +1223,7 @@ unsafe extern "system" fn vk_create_swapchain(
         let result = unsafe {
             (replacement.create)(
                 device,
-                create_info,
+                &raw const provider_info,
                 allocator,
                 out,
                 fg_swapchain.as_raw() as usize as *mut c_void,
@@ -1146,11 +1234,16 @@ unsafe extern "system" fn vk_create_swapchain(
         }
         return result;
     }
-    // SAFETY: wgpu-hal passes a valid create info for this device.
-    let mut swapchain = unsafe { (*create_info).old_swapchain };
-    // SAFETY: as above; the queues were created with the device.
+    let mut swapchain = provider_info.old_swapchain;
+    // SAFETY: `provider_info` is wgpu-hal's create info with a storage-capable
+    // format; the queues were created with the device.
     match unsafe {
-        SwapchainContext::create_vulkan(&state.library, vulkan, create_info, &mut swapchain)
+        SwapchainContext::create_vulkan(
+            &state.library,
+            vulkan,
+            &raw const provider_info,
+            &mut swapchain,
+        )
     } {
         Ok((context, replacement)) => {
             vulkan.fg_swapchain = swapchain;
@@ -1320,6 +1413,18 @@ mod tests {
             }
         );
         assert_eq!(plan.queue_counts(WGPU_GAME_QUEUE, 3), [1, 2, 1]);
+    }
+
+    #[test]
+    fn spare_graphics_queues_keep_presents_in_the_game_family() {
+        // RX 9070 XT (Vulkan, Windows): 8 graphics, 8 compute, 1 transfer queue.
+        let families = [family(G, 8, true), family(C, 8, true), family(T, 1, false)];
+        let plan = plan_vulkan_queues(&families, WGPU_GAME_QUEUE).expect("plan");
+        let slot = |family, index| QueueSlot { family, index };
+        assert_eq!(plan.present, slot(0, 1));
+        assert_eq!(plan.async_compute, slot(1, 0));
+        assert_eq!(plan.image_acquire, slot(2, 0));
+        assert_eq!(plan.queue_counts(WGPU_GAME_QUEUE, 3), [2, 1, 1]);
     }
 
     #[test]

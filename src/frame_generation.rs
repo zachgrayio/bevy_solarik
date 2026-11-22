@@ -101,11 +101,18 @@ pub fn present_counters() -> Option<PresentCounters> {
 #[cfg(feature = "fsr_frame_generation")]
 pub const FSR_FG_SWAPCHAIN_ENV: &str = "SOLARIK_FSR_FG_SWAPCHAIN";
 
+/// Diagnostic: `SOLARIK_FSR_FG_DEBUG_CHECKS=1` creates the frame-generation context
+/// with `FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING`; violations reach tracing target
+/// `fidelityfx`.
+#[cfg(feature = "fsr_frame_generation")]
+pub const FSR_FG_DEBUG_CHECKS_ENV: &str = "SOLARIK_FSR_FG_DEBUG_CHECKS";
+
 #[cfg(feature = "fsr_frame_generation")]
 #[derive(Resource, Default)]
 struct FsrFgLog {
     failed: AtomicBool,
     generating: AtomicBool,
+    debug_checks: bool,
 }
 
 #[cfg(feature = "dlss_frame_generation")]
@@ -171,7 +178,10 @@ impl Plugin for FrameGenerationPlugin {
                 .resource::<RenderDevice>()
                 .clone();
             caps.fsr_fg_supported = install_fsr_presentation(&render_device, caps.dlss_g_supported);
-            app.sub_app_mut(RenderApp).init_resource::<FsrFgLog>();
+            app.sub_app_mut(RenderApp).insert_resource(FsrFgLog {
+                debug_checks: std::env::var(FSR_FG_DEBUG_CHECKS_ENV).is_ok_and(|v| v == "1"),
+                ..FsrFgLog::default()
+            });
         }
 
         app.insert_resource(caps);
@@ -396,7 +406,12 @@ fn run_frame_generation(
             display_size: [display_size.x, display_size.y],
             max_render_size: [display_size.x, display_size.y],
             backbuffer_format,
-            create_flags: fg_camera.create_flags,
+            create_flags: fg_camera.create_flags
+                | if fsr_log.debug_checks {
+                    solarik_fsr_wgpu::effects::framegeneration_create_flags::ENABLE_DEBUG_CHECKING
+                } else {
+                    0
+                },
             dispatch_flags: 0,
             prepare: Prepare {
                 depth,

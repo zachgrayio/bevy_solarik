@@ -93,6 +93,16 @@ driven by `src/frame_generation.rs`):
   wgpu-hal's `VulkanSwapchainInterceptor` through
   `ffxQueryDescSwapchainReplacementFunctionsVK`, recreating in place on resize.
   `VkSwapchainCreateInfoKHR` is embedded **by value** in the create descriptor.
+  The present queue prefers a spare queue in a graphics+compute family so the
+  provider composes on it without queue-family ownership transfers.
+- Vulkan swapchain format: the provider creates its replacement, interpolation and
+  composition images in the swapchain's format with STORAGE usage and no
+  mutable-format flag. sRGB formats have no storage support (measured RX 9070 XT:
+  `R8G8B8A8_SRGB`/`B8G8R8A8_SRGB` false, UNORM true), so generated frames were
+  black and the screen flickered. `provider_swapchain_info` hands the provider the
+  UNORM equivalent; wgpu keeps rendering through sRGB views, as with DXGI on DX12.
+  The frame-generation context's `backBufferFormat` is that UNORM format on both
+  backends (it must equal the swapchain's `presentColor` format).
 - Per frame the window view calls `record_frame`: `ffxConfigure` with the proxy
   swapchain and a dispatch callback, and, when enabled, `PrepareV2` (render-res
   depth/motion vectors, jitter, camera planes/basis) on the render encoder. The
@@ -101,7 +111,10 @@ driven by `src/frame_generation.rs`):
 - `present_counters()` reports rendered frames vs real swapchain presents
   (`GetLastPresentCount` / `getLastPresentCountFFXAPI`).
 - `SOLARIK_FSR_FG_SWAPCHAIN=0` keeps the plain swapchain and reports FSR FG
-  unsupported. Provider errors/warnings go to tracing target `fidelityfx`.
+  unsupported. `SOLARIK_FSR_FG_DEBUG_CHECKS=1` creates the context with
+  `ENABLE_DEBUG_CHECKING`. Provider errors/warnings go to tracing target
+  `fidelityfx`; debug-level logs carry periodic rendered/presented/generated/failed
+  counts.
 - Not yet: HUD-less color or a UI resource, so UI is interpolated with the scene.
 
 ## Engine attach

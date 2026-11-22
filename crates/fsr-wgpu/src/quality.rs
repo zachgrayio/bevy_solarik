@@ -157,8 +157,12 @@ pub mod formats {
     pub const R32G32_FLOAT: u32 = 6;
     /// `R8G8B8A8_UNORM`.
     pub const R8G8B8A8_UNORM: u32 = 10;
-    /// `B8G8R8A8_UNORM` (the usual DXGI/Vulkan swapchain storage format).
+    /// `R8G8B8A8_SRGB`.
+    pub const R8G8B8A8_SRGB: u32 = 12;
+    /// `B8G8R8A8_UNORM` (DXGI swapchain storage; wgpu renders through sRGB views).
     pub const B8G8R8A8_UNORM: u32 = 14;
+    /// `B8G8R8A8_SRGB`.
+    pub const B8G8R8A8_SRGB: u32 = 15;
     /// `R11G11B10_FLOAT`.
     pub const R11G11B10_FLOAT: u32 = 16;
     /// `R10G10B10A2_UNORM`.
