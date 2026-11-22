@@ -27,10 +27,16 @@ use core::fmt;
 pub mod desc_types {
     /// `ffxCreateContextDescUpscaleVersion` (the upscaler's chained version desc).
     pub const UPSCALER_VERSION: u64 = 0x0001_000b;
+    /// `ffxCreateContextDescRadianceCache`.
+    pub const RADIANCECACHE_CREATE: u64 = 0x0006_0002;
     /// `ffxDispatchDescRadianceCache`.
     pub const RADIANCECACHE_DISPATCH: u64 = 0x0006_0004;
+    /// `ffxCreateContextDescDenoiser` (FSR Ray Regeneration).
+    pub const DENOISER_CREATE: u64 = 0x0005_0001;
     /// `ffxDispatchDescDenoiser` (the RR denoiser's head dispatch descriptor).
     pub const DENOISER_DISPATCH: u64 = 0x0005_0041;
+    /// `ffxCreateContextDescFrameGeneration`.
+    pub const FRAMEGENERATION_CREATE: u64 = 0x0002_0001;
     /// `ffxDispatchDescFrameGeneration`.
     pub const FRAMEGENERATION_DISPATCH: u64 = 0x0002_0003;
     /// `ffxCreateContextDescFrameGenerationSwapChainVK` (VK descriptors exist).
@@ -129,6 +135,19 @@ impl EffectStep {
         }
     }
 
+    /// The FFX **create** descriptor id for the `EffectContext` this step
+    /// needs, or `None` for the upscaler (its own `Context`) and the FG
+    /// swapchain (GPU-runtime present-replacement path). Mirrors
+    /// `solarik_fsr_wgpu::effect::EffectKind::from_create_desc`.
+    pub fn create_desc(self) -> Option<u64> {
+        match self {
+            Self::RadianceCache => Some(desc_types::RADIANCECACHE_CREATE),
+            Self::RayRegeneration => Some(desc_types::DENOISER_CREATE),
+            Self::FrameGeneration => Some(desc_types::FRAMEGENERATION_CREATE),
+            Self::Upscale | Self::FrameGenerationSwapchain => None,
+        }
+    }
+
     /// Whether this effect is AMD-only (DX12 + RX 9000+) in FFX 2.4.0.
     pub fn is_amd_only(self) -> bool {
         matches!(self, Self::RadianceCache | Self::RayRegeneration)
@@ -164,6 +183,18 @@ impl EffectChainPlan {
     /// Whether a given step is present in the ordered chain.
     pub fn contains(&self, step: EffectStep) -> bool {
         self.steps.contains(&step)
+    }
+
+    /// Ordered FFX **create** descriptor ids for the context-backed steps in
+    /// this resolved plan (radiance cache → RR → upscale → FG, minus upscaler
+    /// and swapchain). A consuming runtime feeds each id to
+    /// `solarik_fsr_wgpu::effect::EffectKind::from_create_desc` and creates the
+    /// corresponding `EffectContext` before the first dispatch. Pure CPU, no FFI.
+    pub fn effect_create_descs(&self) -> Vec<u64> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.create_desc())
+            .collect()
     }
 }
 
@@ -440,6 +471,63 @@ mod tests {
             EffectStep::Upscale.dispatch_desc(),
             desc_types::UPSCALER_VERSION
         );
+        // No context-backed effects in the default plan (upscaler has its own).
+        assert!(plan.effect_create_descs().is_empty());
+        assert_eq!(EffectStep::Upscale.create_desc(), None);
+        assert_eq!(EffectStep::FrameGenerationSwapchain.create_desc(), None);
+    }
+
+    /// The resolved plan exposes the exact FFX create descriptor ids a runtime
+    /// must turn into `EffectContext`s, in chain order, with a 1:1 mapping to
+    /// `EffectStep::create_desc` and to the bindings crate's dispatch ids.
+    #[test]
+    fn plan_exposes_effect_create_descs_for_context_backed_steps() {
+        let config = FsrEffectChainConfig {
+            backend: FfxBackend::Dx12,
+            ray_regeneration: true,
+            radiance_cache: true,
+            frame_generation: true,
+            ..Default::default()
+        };
+        let plan = resolve_effect_chain(&config);
+        assert_eq!(
+            plan.effect_create_descs(),
+            vec![
+                desc_types::RADIANCECACHE_CREATE,
+                desc_types::DENOISER_CREATE,
+                desc_types::FRAMEGENERATION_CREATE,
+            ]
+        );
+        assert_eq!(
+            EffectStep::RadianceCache.create_desc(),
+            Some(desc_types::RADIANCECACHE_CREATE)
+        );
+        assert_eq!(
+            EffectStep::RayRegeneration.create_desc(),
+            Some(desc_types::DENOISER_CREATE)
+        );
+        assert_eq!(
+            EffectStep::FrameGeneration.create_desc(),
+            Some(desc_types::FRAMEGENERATION_CREATE)
+        );
+        // Header-verified literal ids (SDK 2.4.0 `ffx_api.h` sub ids).
+        assert_eq!(desc_types::RADIANCECACHE_CREATE, 0x0006_0002);
+        assert_eq!(desc_types::DENOISER_CREATE, 0x0005_0001);
+        assert_eq!(desc_types::FRAMEGENERATION_CREATE, 0x0002_0001);
+        // Create and dispatch ids share the same effect id high bits.
+        for (create, dispatch) in [
+            (
+                desc_types::RADIANCECACHE_CREATE,
+                desc_types::RADIANCECACHE_DISPATCH,
+            ),
+            (desc_types::DENOISER_CREATE, desc_types::DENOISER_DISPATCH),
+            (
+                desc_types::FRAMEGENERATION_CREATE,
+                desc_types::FRAMEGENERATION_DISPATCH,
+            ),
+        ] {
+            assert_eq!(create & 0xffff_0000, dispatch & 0xffff_0000);
+        }
     }
 
     #[test]

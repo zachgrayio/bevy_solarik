@@ -27,6 +27,7 @@
 //! Register them in the application's device-creation callback before enabling
 //! FSR, and see `docs/fsr.md` in the parent crate for the measured behaviour.
 
+pub mod effect;
 pub mod effects;
 #[allow(
     unsafe_code,
@@ -73,6 +74,14 @@ pub enum Error {
     /// Zero or oversized dimensions were requested.
     #[error("FSR requires nonzero dimensions no larger than 65535")]
     Dimensions,
+    /// A descriptor header kind did not match the effect it was passed to.
+    #[error("FfxApi descriptor kind mismatch: expected {expected:#x}, got {found:#x}")]
+    Descriptor {
+        /// The descriptor type this operation requires.
+        expected: u64,
+        /// The descriptor type actually supplied.
+        found: u64,
+    },
 }
 
 impl From<native::LoadError> for Error {
@@ -107,6 +116,13 @@ impl Library {
     pub fn is_available() -> bool {
         Self::load().is_ok()
     }
+}
+
+/// Build a `Library` around an in-process stub `Module` for unit tests. No DLL,
+/// GPU or device is involved; only the resolved FfxApi function table is used.
+#[cfg(test)]
+pub(crate) fn stub_library(module: Arc<native::Module>) -> Library {
+    Library { module }
 }
 
 // Note: the FfxApi `ffxQuery` export is resolved as part of the pinned five-function

@@ -59,8 +59,22 @@ upscaler version (`0x0001000b`), DX12 backend (`0x00000002`), denoiser /
 FSR Ray Regeneration (`0x00050000`), radiance cache (`0x00060000`) and frame
 generation (`0x00020000`), plus provider-version enumeration/override. Layouts
 were cross-checked against the MSVC-compiled C declarations recorded in
-`src/abi.h`. These are the ABI layer for Phases 2/5/6; GPU dispatch wiring is
-hardware-gated (D12) and reviewed on RX 9000+ / RTX 50-series.
+`src/abi.h`.
+
+`crates/fsr-wgpu/src/effect.rs` now gives these effects a **real call path**,
+not just data: `EffectContext` owns one FfxApi context for the denoiser (RR),
+radiance cache or frame generation and issues `ffxCreateContext` → `ffxQuery` →
+`ffxDispatch` → `ffxDestroyContext` through the same runtime-loaded 5-function
+ABI as the upscaler. The create + backend descriptor chain is boxed/pinned for
+the context lifetime; dispatch validates the header kind and, on Vulkan, injects
+the live `VkCommandBuffer` from a wgpu encoder (`dispatch_vulkan`). DX12 effects
+pass a raw `ID3D12Device*`/command-list pointer from the app's HAL interop.
+`EffectKind::from_create_desc`/`from_dispatch_desc` bridge the resolved
+`EffectChainPlan` (`src/realtime/effects_chain.rs::effect_create_descs`) to the
+context factory. Headless stub-FFI tests drive the full chain for all three
+effects; no DLL/GPU/window is needed. What remains hardware-gated (D12) is
+feeding real per-signal `VkImage`s/buffers and the FG swapchain present
+interception from the render node, plus image review on RX 9000+/RTX 50-series.
 
 ## Engine attach
 
@@ -142,7 +156,10 @@ can be upstreamed on its own.
   sign-in.
 - The whole FfxApi call chain (create/dispatch/query/destroy, descriptor
   chaining and `pNext` retargeting) is exercised in-process against a stub
-  provider with the exact C ABI signatures — no DLL or GPU required.
+  provider with the exact C ABI signatures — no DLL or GPU required. This now
+  also covers `effect.rs`'s `EffectContext` for the RR denoiser, radiance cache
+  and frame generation: create → query → dispatch (with header-kind validation)
+  → destroy, including error propagation and dimension rejection.
 
 ### Vulkan device requirements (remaining GPU work)
 
