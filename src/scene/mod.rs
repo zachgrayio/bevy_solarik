@@ -122,10 +122,12 @@ impl Plugin for RaytracingScenePlugin {
         render_app.init_resource::<SolarikAlphaTesting>();
         render_app.init_resource::<SolarikRaySettings>();
 
+        let scene_bindings =
+            RaytracingSceneBindings::for_device(render_app.world().resource::<RenderDevice>());
         render_app
             .init_gpu_resource::<BlasManager>()
             .init_gpu_resource::<StandardMaterialAssets>()
-            .insert_resource(RaytracingSceneBindings::new())
+            .insert_resource(scene_bindings)
             .add_systems(
                 ExtractSchedule,
                 (

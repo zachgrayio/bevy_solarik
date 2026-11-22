@@ -1426,6 +1426,29 @@ pub(crate) fn prepare_raytracing_scene_bindings(
 
 impl RaytracingSceneBindings {
     pub fn new() -> Self {
+        Self::with_texture_count(MAX_TEXTURE_COUNT)
+    }
+
+    /// Build scene bindings sized to fit the active device's binding-array
+    /// limits (e.g. D3D12 caps shader-visible sampler heaps at 2048 entries,
+    /// whereas Vulkan allows 5000+).
+    pub fn for_device(render_device: &RenderDevice) -> Self {
+        let limits = render_device.limits();
+        let sampler_budget = limits
+            .max_binding_array_sampler_elements_per_shader_stage
+            .saturating_sub(MAX_SCAN_ATLASES.get());
+        let element_budget = limits
+            .max_binding_array_elements_per_shader_stage
+            .saturating_sub(MAX_MESH_SLAB_COUNT.get() * 2 + MAX_SCAN_ATLASES.get());
+        let clamped = MAX_TEXTURE_COUNT
+            .get()
+            .min(sampler_budget.max(1))
+            .min(element_budget.max(1));
+        let texture_count = NonZeroU32::new(clamped).unwrap_or(NonZeroU32::MIN);
+        Self::with_texture_count(texture_count)
+    }
+
+    fn with_texture_count(texture_count: NonZeroU32) -> Self {
         Self {
             bind_group: None,
             bind_group_layout: BindGroupLayoutDescriptor::new(
@@ -1436,8 +1459,8 @@ impl RaytracingSceneBindings {
                         storage_buffer_read_only_sized(false, None).count(MAX_MESH_SLAB_COUNT),
                         storage_buffer_read_only_sized(false, None).count(MAX_MESH_SLAB_COUNT),
                         texture_2d(TextureSampleType::Float { filterable: true })
-                            .count(MAX_TEXTURE_COUNT),
-                        sampler(SamplerBindingType::Filtering).count(MAX_TEXTURE_COUNT),
+                            .count(texture_count),
+                        sampler(SamplerBindingType::Filtering).count(texture_count),
                         storage_buffer_read_only_sized(false, None),
                         acceleration_structure(),
                         storage_buffer_read_only_sized(false, None),
