@@ -84,6 +84,17 @@ impl Plugin for RaytracingScenePlugin {
     }
 
     fn finish(&self, app: &mut App) {
+        // `CanopyPlugin` registers Render-schedule consumers of
+        // `SceneGeometryReadiness` (`prepare_assets<GpuRegion>` and
+        // `filtered_canopy::scene::prepare`) unconditionally, so the shared
+        // receipt must reach the render world on every backend. Publishing it
+        // only after the raytracing capability gate below made those systems
+        // panic with "Resource does not exist" at the first frame on raster-only
+        // backends (wgpu D3D12, older AMD/Intel GPUs without ray query, Metal).
+        // `Clone` shares one `Arc<Shared>`, so app-world requests and
+        // render-world publishes stay coherent regardless of raytracing support.
+        share_scene_readiness(app);
+
         let render_app = app.sub_app_mut(RenderApp);
         let render_device = render_app.world().resource::<RenderDevice>();
         let features = render_device.features();
@@ -95,11 +106,6 @@ impl Plugin for RaytracingScenePlugin {
             return;
         }
 
-        let readiness = app
-            .world()
-            .resource::<bevy_render::scene_readiness::SceneGeometryReadiness>()
-            .clone();
-        app.sub_app_mut(RenderApp).insert_resource(readiness);
         app.add_plugins((
             ExtractResourcePlugin::<SolarikSkyLight>::default(),
             ExtractResourcePlugin::<SolarikAlphaTesting>::default(),
@@ -146,5 +152,62 @@ impl Plugin for RaytracingScenePlugin {
                         .after(prepare_raytracing_scene_bindings),
                 ),
             );
+    }
+}
+
+/// Clone the app-world `SceneGeometryReadiness` into the render world.
+///
+/// The canopy prepass, `prepare_assets<GpuRegion>` and the geometry binder all
+/// read this receipt in the `Render` schedule, and `CanopyPlugin` registers them
+/// for every backend. It is an `Arc`-backed shared receipt, so publishing a
+/// clone preserves the app↔render request/publication link. Doing this outside
+/// the raytracing capability gate keeps raster-only backends (wgpu D3D12,
+/// AMD/Intel GPUs without ray query, Metal) from panicking with
+/// "`Res<SceneGeometryReadiness>` ... Resource does not exist" on the first frame.
+fn share_scene_readiness(app: &mut App) {
+    let readiness = app
+        .world()
+        .resource::<bevy_render::scene_readiness::SceneGeometryReadiness>()
+        .clone();
+    app.sub_app_mut(RenderApp).insert_resource(readiness);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_app::SubApp;
+    use bevy_asset::{AssetId, UntypedAssetId};
+    use bevy_mesh::Mesh;
+
+    /// The failing D3D12/older-GPU case: no `RenderDevice`, no raytracing
+    /// features, yet every registered `Render` consumer must still find the
+    /// shared readiness receipt in the render world.
+    #[test]
+    fn scene_readiness_reaches_render_world_without_raytracing_features() {
+        let mut app = App::new();
+        app.init_resource::<bevy_render::scene_readiness::SceneGeometryReadiness>();
+        app.insert_sub_app(RenderApp, SubApp::new());
+
+        // Request a geometry asset in the app world before sharing.
+        let mesh = AssetId::<Mesh>::default();
+        let id: UntypedAssetId = mesh.untyped();
+        app.world()
+            .resource::<bevy_render::scene_readiness::SceneGeometryReadiness>()
+            .request(id);
+
+        share_scene_readiness(&mut app);
+
+        let render = app.sub_app(RenderApp).world();
+        assert!(render.contains_resource::<bevy_render::scene_readiness::SceneGeometryReadiness>());
+        // The clone shares the same Arc, so a render-world publish is visible to
+        // the app world and the original request is visible to the render world.
+        render
+            .resource::<bevy_render::scene_readiness::SceneGeometryReadiness>()
+            .publish(id, true);
+        assert!(
+            app.world()
+                .resource::<bevy_render::scene_readiness::SceneGeometryReadiness>()
+                .ready(id)
+        );
     }
 }
