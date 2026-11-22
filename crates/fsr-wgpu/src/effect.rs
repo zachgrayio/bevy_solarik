@@ -176,6 +176,28 @@ impl<'a> BackendDevice<'a> {
     }
 }
 
+/// Put `reads` in the shader-resource state and `writes` in the read-write storage
+/// state on `encoder`, so a later raw `FfxApi` dispatch (recorded into its own
+/// encoder: wgpu forbids mixing raw and wgpu encoding) finds them where its
+/// resource descriptions say (`PIXEL_COMPUTE_READ` / `UNORDERED_ACCESS`).
+pub fn transition_for_dispatch(
+    encoder: &mut wgpu::CommandEncoder,
+    reads: &[&wgpu::TextureView],
+    writes: &[&wgpu::TextureView],
+) {
+    let read = reads.iter().map(|view| wgpu::TextureTransition {
+        texture: view.texture(),
+        selector: None,
+        state: wgpu::TextureUses::RESOURCE,
+    });
+    let write = writes.iter().map(|view| wgpu::TextureTransition {
+        texture: view.texture(),
+        selector: None,
+        state: wgpu::TextureUses::STORAGE_READ_WRITE,
+    });
+    encoder.transition_resources(std::iter::empty(), read.chain(write));
+}
+
 /// Convert a wgpu texture view into a `FfxApiResource` for the active backend
 /// (Vulkan `VkImage` or Windows DX12 `ID3D12Resource*`).
 pub fn resource_for_wgpu(view: &wgpu::TextureView, state: u32) -> Result<native::Resource, Error> {

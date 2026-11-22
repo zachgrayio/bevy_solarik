@@ -72,9 +72,31 @@ pass a raw `ID3D12Device*`/command-list pointer from the app's HAL interop.
 `EffectKind::from_create_desc`/`from_dispatch_desc` bridge the resolved
 `EffectChainPlan` (`src/realtime/effects_chain.rs::effect_create_descs`) to the
 context factory. Headless stub-FFI tests drive the full chain for all three
-effects; no DLL/GPU/window is needed. What remains hardware-gated (D12) is
-feeding real per-signal `VkImage`s/buffers for RR/radiance cache from the render
-node, plus image review on RX 9000+/RTX 50-series.
+effects; no DLL/GPU/window is needed. The neural radiance cache is not
+integrated (it needs prediction/training buffers Solari does not produce).
+
+## Ray Regeneration (DX12 denoiser)
+
+`src/realtime/fsr_effects.rs` + `fsr_rr.wesl` denoise Solari on DX12, where NRD
+(SPIR-V only) cannot run, mirroring the NRD integration:
+
+- Inputs come from Solari's `NRD_SIGNALS` split lighting (diffuse/specular radiance,
+  hit distance in alpha; requires the `nrd` feature for the signals).
+- `prepare_fsr_rr` divides out first-bounce albedo (the NRD factors, passed
+  separately with `NON_ENCODED_ALBEDO`), writes world-space octahedral normals with
+  linear roughness (material 0), signed view-space z (empty pixels `-1e6`, outside
+  `linearDepthBounds`, pass through) and Bevy UV motion plus the view-z delta
+  (`motionVectorScale = (-1, -1, 1)`). Signals: `INDIRECT_DIFFUSE | INDIRECT_SPECULAR`.
+- View/projection matrices are copied as-is (glam column-major = FFX row-major
+  with row vectors); jitter uses the upscaler's sign.
+- The `FfxApi` dispatch records raw D3D12 commands into its own encoder between the
+  wgpu prepare and resolve passes; wgpu rejects mixing raw and wgpu encoding on one
+  encoder (the previous placeholder panicked here). `resolve_fsr_rr` remodulates
+  and adds emission into the view target.
+- `SOLARIK_FSR_RR=0` skips denoising for A/B comparison.
+- Measured RX 9070 XT: brightness matches the Vulkan NRD reference in static
+  regions (1296x759, Performance); RT + FG x2 presents 72.7/s at 36.4 rendered/s
+  (1600x900, Quality).
 
 ## Frame generation presentation
 

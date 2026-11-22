@@ -15,6 +15,7 @@ use bevy_diagnostic::FrameCount;
 use bevy_ecs::{prelude::*, resource::Resource, system::Commands};
 use bevy_platform::collections::HashSet;
 use bevy_render::{
+    camera::TemporalJitter,
     diagnostic::RecordDiagnostics as _,
     render_resource::{
         BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
@@ -78,6 +79,7 @@ type SolarikLightingViewQuery = (
     &'static ViewPrepassTextures,
     &'static ViewUniformOffset,
     &'static PreviousViewUniformOffset,
+    Option<&'static TemporalJitter>,
 );
 
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -89,6 +91,7 @@ type SolarikLightingViewQuery = (
     &'static ViewPrepassTextures,
     &'static ViewUniformOffset,
     &'static PreviousViewUniformOffset,
+    Option<&'static TemporalJitter>,
     Option<&'static ViewDlssRayReconstructionTextures>,
 );
 
@@ -169,9 +172,9 @@ pub fn prepare_primary_glass(
         .collect();
     for view in &views {
         #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
-        let (_, extracted, _, _, textures, _, _) = view;
+        let (_, extracted, _, _, textures, _, _, _) = view;
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-        let (_, extracted, _, _, textures, _, _, rr_textures) = view;
+        let (_, extracted, _, _, textures, _, _, _, rr_textures) = view;
         #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
         let mode = ViewLightingMode::Standard;
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -233,6 +236,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         view_prepass_textures,
         view_uniform_offset,
         previous_view_uniform_offset,
+        temporal_jitter,
     ) = view.into_inner();
 
     #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -244,6 +248,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         view_prepass_textures,
         view_uniform_offset,
         previous_view_uniform_offset,
+        temporal_jitter,
         view_dlss_rr_textures,
     ) = view.into_inner();
 
@@ -758,24 +763,45 @@ pub fn solarik_lighting<const PRIMARY: bool>(
             span.end(ctx.command_encoder());
         }
     }
-    #[cfg(feature = "fsr")]
+    // FSR Ray Regeneration denoises the same split NRD_SIGNALS lighting on DX12,
+    // where NRD (SPIR-V only) never runs.
+    #[cfg(all(feature = "fsr", feature = "nrd"))]
     if let Some(fsr_effects) = fsr_effects.as_deref()
-        && (solarik_lighting.fsr_rr || solarik_lighting.fsr_radiance_cache)
+        && let (Some(view_uniforms), Some(previous_view_uniforms)) = (
+            view_uniforms.uniforms.binding(),
+            previous_view_uniforms.uniforms.binding(),
+        )
     {
-        super::fsr_effects::dispatch_dx12_effects(
+        let enabled = solarik_lighting.fsr_rr && matches!(mode, ViewLightingMode::Standard);
+        super::fsr_effects::denoise(
             fsr_effects,
-            solarik_lighting.fsr_radiance_cache,
-            solarik_lighting.fsr_rr,
-            s.view_size,
-            frame_count.0,
-            reset_flags & 1 != 0,
+            enabled,
+            super::fsr_effects::RrInputs {
+                size: s.view_size,
+                frame_index: frame_count.0,
+                reset: reset_flags & 1 != 0,
+                camera: extracted_view,
+                jitter: temporal_jitter.map_or(bevy_math::Vec2::ZERO, |j| -j.offset),
+                raw_diffuse: &s.nrd.diffuse,
+                raw_specular: &s.nrd.specular,
+                gbuffer,
+                depth: depth_buffer,
+                motion: motion_vectors,
+                view_uniforms,
+                previous_view_uniforms,
+                view_offset: view_uniform_offset.offset,
+                previous_view_offset: previous_view_uniform_offset.offset,
+                target: fsr_view,
+            },
             &render_device,
-            ctx.command_encoder(),
-            fsr_view,
-            depth_buffer,
-            motion_vectors,
+            &pipeline_cache,
+            &mut ctx,
         );
     }
+    #[cfg(all(feature = "fsr", not(feature = "nrd")))]
+    let _ = (&fsr_effects, &temporal_jitter);
+    #[cfg(not(feature = "fsr"))]
+    let _ = &temporal_jitter;
     #[cfg(feature = "fsr")]
     if let (Some(fsr_state), Some(fsr_pipelines)) = (fsr_state.as_deref(), fsr_pipelines.as_deref())
     {
