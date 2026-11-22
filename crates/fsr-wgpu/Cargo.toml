@@ -15,6 +15,9 @@ libloading = "0.8"
 thiserror = "2"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "dx12"] }
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
