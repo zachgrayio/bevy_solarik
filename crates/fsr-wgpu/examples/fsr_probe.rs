@@ -1,4 +1,4 @@
-//! Probe an installed AMD FidelityFX FSR provider.
+//! Probe an installed AMD `FidelityFX` FSR provider.
 //!
 //! ```text
 //! cargo run -p solarik-fsr-wgpu --example fsr_probe

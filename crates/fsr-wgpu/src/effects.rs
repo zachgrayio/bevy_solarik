@@ -1042,7 +1042,7 @@ const _: () = assert!(size_of::<DispatchDescDenoiserSpecularOcclusion>() == 120)
     reason = "the in-process stub provider must use the exact unsafe FfxApi C ABI signatures"
 )]
 mod tests {
-    //! CPU-only checks: constants match the SDK macros and the FfxApi stub
+    //! CPU-only checks: constants match the SDK macros and the `FfxApi` stub
     //! chain accepts the new 2.4.0 descriptors. No DLL, GPU or window is used.
 
     use super::*;

@@ -1,6 +1,6 @@
 //! wgpu 30 → raw Vulkan handle conversion, the second (and last) unsafe boundary.
 //!
-//! The FfxApi Vulkan provider takes `VkImage`/`VkCommandBuffer` handles as
+//! The `FfxApi` Vulkan provider takes `VkImage`/`VkCommandBuffer` handles as
 //! `void*`, not wgpu objects. These helpers follow the exact pattern already used
 //! by the fork's `vendor/dlss_wgpu` (`as_hal::<Vulkan>()` + `raw_handle()`).
 

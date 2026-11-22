@@ -104,7 +104,7 @@ impl SolariQuality {
     }
 }
 
-/// AMD FidelityFX FSR quality preset, the engine-facing equivalent of
+/// AMD `FidelityFX` FSR quality preset, the engine-facing equivalent of
 /// `bevy_anti_alias::dlss::DlssPerfQualityMode`. It drives the camera's render
 /// resolution, `TemporalJitter` and `MipBias`; see `docs/fsr.md`.
 #[cfg(feature = "fsr")]
