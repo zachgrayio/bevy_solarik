@@ -62,7 +62,7 @@ mod nvsdk_ngx;
 #[cfg(not(feature = "mock"))]
 mod sdk;
 
-#[cfg(feature = "dx12")]
+#[cfg(all(windows, feature = "dx12"))]
 pub mod dx12;
 
 /// DLSS Frame Generation (data-only, CPU-verifiable layer).

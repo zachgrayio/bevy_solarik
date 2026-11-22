@@ -90,8 +90,10 @@ struct CoreExports {
     sl_get_new_frame_token: FnSlGetNewFrameToken,
     sl_set_constants: FnSlSetConstants,
     sl_set_tag_for_frame: FnSlSetTagForFrame,
+    #[cfg(windows)]
     sl_set_d3d_device: FnSlSetD3DDevice,
     sl_set_vulkan_info: FnSlSetVulkanInfo,
+    #[cfg(windows)]
     sl_upgrade_interface: FnSlUpgradeInterface,
     vk_create_swapchain: Option<ash::vk::PFN_vkCreateSwapchainKHR>,
     vk_destroy_swapchain: Option<ash::vk::PFN_vkDestroySwapchainKHR>,
@@ -219,8 +221,10 @@ fn load_core() -> Result<(CoreExports, PathBuf), Error> {
             ),
             sl_set_constants: load_sym!(library, "slSetConstants\0", FnSlSetConstants),
             sl_set_tag_for_frame: load_sym!(library, "slSetTagForFrame\0", FnSlSetTagForFrame),
+            #[cfg(windows)]
             sl_set_d3d_device: load_sym!(library, "slSetD3DDevice\0", FnSlSetD3DDevice),
             sl_set_vulkan_info: load_sym!(library, "slSetVulkanInfo\0", FnSlSetVulkanInfo),
+            #[cfg(windows)]
             sl_upgrade_interface: load_sym!(library, "slUpgradeInterface\0", FnSlUpgradeInterface),
             vk_create_swapchain: unsafe {
                 library
