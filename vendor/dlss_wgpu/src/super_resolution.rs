@@ -183,9 +183,7 @@ impl DlssSuperResolution {
                 InMVScaleY: render_parameters.motion_vector_scale.unwrap_or([1.0, 1.0])[1],
                 pInTransparencyMask: z,
                 pInExposureTexture: exposure_ptr,
-                pInBiasCurrentColorMask: render_parameters
-                    .bias
-                    .map_or(z, texture_to_d3d12),
+                pInBiasCurrentColorMask: render_parameters.bias.map_or(z, texture_to_d3d12),
                 InColorSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
                 InDepthSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
                 InMVSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
