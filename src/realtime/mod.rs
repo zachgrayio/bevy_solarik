@@ -3,6 +3,8 @@ mod extract;
 #[cfg(feature = "fsr")]
 mod fsr;
 #[cfg(feature = "fsr")]
+mod fsr_effects;
+#[cfg(feature = "fsr")]
 pub mod fsr_upscaler;
 #[cfg(feature = "fsr")]
 pub use fsr_upscaler::{FsrUpscaler, FsrUpscalerPlugin, FsrUpscalerSupported};
@@ -204,7 +206,9 @@ impl Plugin for SolarikLightingPlugin {
             render_app.add_systems(RenderStartup, nrd::init_pipelines);
         }
         #[cfg(feature = "fsr")]
-        render_app.add_systems(RenderStartup, fsr::init_fsr);
+        render_app
+            .init_resource::<fsr_effects::FsrSolariEffects>()
+            .add_systems(RenderStartup, fsr::init_fsr);
 
         render_app
             .init_resource::<PrimaryGlassViews>()
@@ -288,6 +292,12 @@ pub struct SolarikLighting {
     /// FSR extra sharpening, `0..1`.
     #[cfg(feature = "fsr")]
     pub fsr_sharpness: f32,
+    /// Enable AMD FSR Ray Regeneration denoiser (DX12 / RX 9000+ only).
+    #[cfg(feature = "fsr")]
+    pub fsr_rr: bool,
+    /// Enable AMD FSR Neural Radiance Cache (DX12 / RX 9000+ only).
+    #[cfg(feature = "fsr")]
+    pub fsr_radiance_cache: bool,
     /// Runtime GI and world-cache budgets for this camera.
     pub quality: SolariQuality,
 }
@@ -304,6 +314,10 @@ impl Default for SolarikLighting {
             fsr_quality: FsrQualityMode::default(),
             #[cfg(feature = "fsr")]
             fsr_sharpness: 0.0,
+            #[cfg(feature = "fsr")]
+            fsr_rr: false,
+            #[cfg(feature = "fsr")]
+            fsr_radiance_cache: false,
             quality: SolariQuality::default(),
         }
     }

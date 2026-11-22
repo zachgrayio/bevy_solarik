@@ -1006,6 +1006,34 @@ pub struct CommandEncoder {
 unsafe impl Send for CommandEncoder {}
 unsafe impl Sync for CommandEncoder {}
 
+/// Process-wide optional DX12 swapchain/present hooks for frame-generation
+/// providers (NVIDIA Streamline `slUpgradeInterface` / AMD FFX FG swapchain
+/// wrapping / Reflex PCL markers). Backend-neutral: `wgpu-hal` carries no
+/// vendor dependency; the application or renderer registers hooks at startup.
+#[derive(Clone, Copy, Default)]
+pub struct Dx12SwapchainHooks {
+    /// Invoked immediately after `IDXGISwapChain3` creation. Receives the
+    /// raw `IDXGISwapChain3*` (with ownership of 1 COM ref) and may return an
+    /// upgraded proxy `IDXGISwapChain3*` (also with 1 COM ref). Returning
+    /// `None` keeps the original pointer unchanged.
+    pub on_swapchain_created: Option<unsafe fn(*mut ffi::c_void) -> Option<*mut ffi::c_void>>,
+    /// Invoked immediately before `IDXGISwapChain3::Present`.
+    pub on_present_start: Option<fn()>,
+    /// Invoked immediately after `IDXGISwapChain3::Present`.
+    pub on_present_end: Option<fn()>,
+}
+
+static DX12_SWAPCHAIN_HOOKS: RwLock<Dx12SwapchainHooks> = RwLock::new(Dx12SwapchainHooks {
+    on_swapchain_created: None,
+    on_present_start: None,
+    on_present_end: None,
+});
+
+/// Register DX12 swapchain/present interception hooks (e.g. Streamline DLSS-G).
+pub fn set_swapchain_hooks(hooks: Dx12SwapchainHooks) {
+    *DX12_SWAPCHAIN_HOOKS.write() = hooks;
+}
+
 impl CommandEncoder {
     /// Raw `ID3D12GraphicsCommandList*` currently open for recording, if any.
     pub fn raw_command_list_ptr(&self) -> Option<*mut ffi::c_void> {
@@ -1646,10 +1674,17 @@ impl crate::Surface for Surface {
                     }
                 }
 
-                swap_chain1.cast::<Dxgi::IDXGISwapChain3>().map_err(|err| {
+                let swap_chain3 = swap_chain1.cast::<Dxgi::IDXGISwapChain3>().map_err(|err| {
                     log::error!("Unable to cast swapchain: {err}");
                     crate::SurfaceError::Other("swapchain cast to version 3")
-                })?
+                })?;
+                if let Some(upgrade) = DX12_SWAPCHAIN_HOOKS.read().on_swapchain_created {
+                    let raw_ptr = swap_chain3.into_raw();
+                    let next_ptr = unsafe { upgrade(raw_ptr) }.unwrap_or(raw_ptr);
+                    unsafe { Dxgi::IDXGISwapChain3::from_raw(next_ptr) }
+                } else {
+                    swap_chain3
+                }
             }
         };
 
@@ -1850,9 +1885,15 @@ impl crate::Queue for Queue {
         };
 
         profiling::scope!("IDXGISwapchain3::Present");
-        unsafe { sc.raw.Present(interval, flags) }
-            .ok()
-            .into_device_result("Present")?;
+        let hooks = *DX12_SWAPCHAIN_HOOKS.read();
+        if let Some(before) = hooks.on_present_start {
+            before();
+        }
+        let present_res = unsafe { sc.raw.Present(interval, flags) };
+        if let Some(after) = hooks.on_present_end {
+            after();
+        }
+        present_res.ok().into_device_result("Present")?;
 
         Ok(())
     }

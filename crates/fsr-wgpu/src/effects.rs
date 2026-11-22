@@ -14,7 +14,8 @@
 //! Nothing here links against an AMD binary; the runtime loader resolves the
 //! same five `FfxApi` exports with `libloading`.
 
-use crate::native::{Dimensions2D, FfxApiHeader, FloatCoords2D, Resource, StructType};
+use crate::native::StructType;
+pub use crate::native::{Dimensions2D, FfxApiHeader, FloatCoords2D, Resource};
 use std::ffi::{c_char, c_void};
 
 /// Compose an SDK version from major/minor/patch, mirroring the

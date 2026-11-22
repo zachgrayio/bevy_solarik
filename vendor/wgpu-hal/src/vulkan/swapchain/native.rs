@@ -233,9 +233,23 @@ impl Surface for NativeSurface {
             info = info.push_next(&mut format_list_info);
         }
 
+        let interceptor = crate::vulkan::swapchain_interceptor();
         let result = {
             profiling::scope!("vkCreateSwapchainKHR");
-            unsafe { functor.create_swapchain(&info, None) }
+            if let Some(create_fn) = interceptor.create_swapchain {
+                let mut swapchain = vk::SwapchainKHR::null();
+                let res = unsafe {
+                    create_fn(
+                        device.shared.raw.handle(),
+                        &info,
+                        core::ptr::null(),
+                        &mut swapchain,
+                    )
+                };
+                res.result_with_success(swapchain)
+            } else {
+                unsafe { functor.create_swapchain(&info, None) }
+            }
         };
 
         let raw = match result {
@@ -254,8 +268,35 @@ impl Surface for NativeSurface {
             }
         };
 
-        let images = unsafe { functor.get_swapchain_images(raw) }
+        let images = if let Some(get_images_fn) = interceptor.get_swapchain_images {
+            let mut count = 0u32;
+            unsafe {
+                get_images_fn(
+                    device.shared.raw.handle(),
+                    raw,
+                    &mut count,
+                    core::ptr::null_mut(),
+                )
+            }
+            .result()
             .map_err(crate::vulkan::map_host_device_oom_err)?;
+            let mut images = vec![vk::Image::null(); count as usize];
+            unsafe {
+                get_images_fn(
+                    device.shared.raw.handle(),
+                    raw,
+                    &mut count,
+                    images.as_mut_ptr(),
+                )
+            }
+            .result()
+            .map_err(crate::vulkan::map_host_device_oom_err)?;
+            images.truncate(count as usize);
+            images
+        } else {
+            unsafe { functor.get_swapchain_images(raw) }
+                .map_err(crate::vulkan::map_host_device_oom_err)?
+        };
 
         // This fence is only used to throttle acquisition on Windows. It is very important to
         // avoid bad frame pacing when the Vulkan driver is using a DXGI swapchain. See
@@ -369,8 +410,13 @@ pub(crate) struct NativeSwapchain {
 
 impl Drop for NativeSwapchain {
     fn drop(&mut self) {
+        let interceptor = crate::vulkan::swapchain_interceptor();
         unsafe {
-            self.functor.destroy_swapchain(self.raw, None);
+            if let Some(destroy_fn) = interceptor.destroy_swapchain {
+                destroy_fn(self.device.raw.handle(), self.raw, core::ptr::null());
+            } else {
+                self.functor.destroy_swapchain(self.raw, None);
+            }
         }
     }
 }
@@ -469,14 +515,32 @@ impl Swapchain for NativeSwapchain {
         let acquire_fence = self.fence.unwrap_or_else(vk::Fence::null);
 
         // will block if no image is available
+        let interceptor = crate::vulkan::swapchain_interceptor();
         let (index, suboptimal) = match unsafe {
             profiling::scope!("vkAcquireNextImageKHR");
-            self.functor.acquire_next_image(
-                self.raw,
-                timeout_ns,
-                acquire_semaphore_guard.acquire,
-                acquire_fence,
-            )
+            if let Some(acquire_fn) = interceptor.acquire_next_image {
+                let mut index = 0u32;
+                let res = acquire_fn(
+                    self.device.raw.handle(),
+                    self.raw,
+                    timeout_ns,
+                    acquire_semaphore_guard.acquire,
+                    acquire_fence,
+                    &mut index,
+                );
+                match res {
+                    vk::Result::SUCCESS => Ok((index, false)),
+                    vk::Result::SUBOPTIMAL_KHR => Ok((index, true)),
+                    err => Err(err),
+                }
+            } else {
+                self.functor.acquire_next_image(
+                    self.raw,
+                    timeout_ns,
+                    acquire_semaphore_guard.acquire,
+                    acquire_fence,
+                )
+            }
         } {
             // We treat `VK_SUBOPTIMAL_KHR` as `VK_SUCCESS` on Android.
             // See the comment in `Queue::present`.
@@ -610,9 +674,25 @@ impl Swapchain for NativeSwapchain {
             vk_info
         };
 
+        let interceptor = crate::vulkan::swapchain_interceptor();
         let suboptimal = {
             profiling::scope!("vkQueuePresentKHR");
-            unsafe { self.functor.queue_present(queue.raw, &vk_info) }.map_err(|error| {
+            if let Some(before) = interceptor.on_present_start {
+                before();
+            }
+            let res = if let Some(present_fn) = interceptor.queue_present {
+                match unsafe { present_fn(queue.raw, &vk_info) } {
+                    vk::Result::SUCCESS => Ok(false),
+                    vk::Result::SUBOPTIMAL_KHR => Ok(true),
+                    err => Err(err),
+                }
+            } else {
+                unsafe { self.functor.queue_present(queue.raw, &vk_info) }
+            };
+            if let Some(after) = interceptor.on_present_end {
+                after();
+            }
+            res.map_err(|error| {
                 match error {
                     vk::Result::ERROR_OUT_OF_DATE_KHR => crate::SurfaceError::Outdated,
                     vk::Result::ERROR_SURFACE_LOST_KHR => crate::SurfaceError::Lost,

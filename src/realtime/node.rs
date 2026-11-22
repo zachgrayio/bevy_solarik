@@ -218,6 +218,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     #[cfg(feature = "nrd")] nrd_pipelines: Option<Res<super::nrd::NrdPipelines>>,
     #[cfg(feature = "fsr")] fsr_state: Option<Res<super::fsr::FsrState>>,
     #[cfg(feature = "fsr")] fsr_pipelines: Option<Res<super::fsr::FsrPipelines>>,
+    #[cfg(feature = "fsr")] fsr_effects: Option<Res<super::fsr_effects::FsrSolariEffects>>,
     #[cfg(feature = "graphics_debug")] query_capture: Option<
         Res<super::query_capture::PrimaryQueryCapture>,
     >,
@@ -756,6 +757,24 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         if let Some(span) = span {
             span.end(ctx.command_encoder());
         }
+    }
+    #[cfg(feature = "fsr")]
+    if let Some(fsr_effects) = fsr_effects.as_deref()
+        && (solarik_lighting.fsr_rr || solarik_lighting.fsr_radiance_cache)
+    {
+        super::fsr_effects::dispatch_dx12_effects(
+            fsr_effects,
+            solarik_lighting.fsr_radiance_cache,
+            solarik_lighting.fsr_rr,
+            s.view_size,
+            frame_count.0,
+            reset_flags & 1 != 0,
+            &render_device,
+            ctx.command_encoder(),
+            fsr_view,
+            depth_buffer,
+            motion_vectors,
+        );
     }
     #[cfg(feature = "fsr")]
     if let (Some(fsr_state), Some(fsr_pipelines)) = (fsr_state.as_deref(), fsr_pipelines.as_deref())

@@ -149,6 +149,34 @@ pub enum BackendDevice<'a> {
     Dx12(*mut c_void),
 }
 
+impl<'a> BackendDevice<'a> {
+    /// Detect the active wgpu backend (Vulkan or Windows DX12) and build the
+    /// matching [`BackendDevice`].
+    pub fn from_wgpu(device: &'a wgpu::Device) -> Result<Self, Error> {
+        if vulkan::device_context(device).is_some() {
+            return Ok(Self::Vulkan(device));
+        }
+        #[cfg(windows)]
+        if let Some(ptr) = crate::dx12::device_ptr(device) {
+            return Ok(Self::Dx12(ptr));
+        }
+        Err(Error::NoVulkan)
+    }
+}
+
+/// Convert a wgpu texture view into a `FfxApiResource` for the active backend
+/// (Vulkan `VkImage` or Windows DX12 `ID3D12Resource*`).
+pub fn resource_for_wgpu(view: &wgpu::TextureView, state: u32) -> Result<native::Resource, Error> {
+    if let Some(res) = vulkan::resource(view, state) {
+        return Ok(res);
+    }
+    #[cfg(windows)]
+    if let Some(res) = crate::dx12::resource(view, state) {
+        return Ok(res);
+    }
+    Err(Error::NoVulkan)
+}
+
 enum BackendDesc {
     Vk(native::CreateBackendVkDesc),
     Dx12(effects::CreateBackendDx12Desc),
@@ -323,6 +351,14 @@ pub struct EffectContext {
     kind: EffectKind,
 }
 
+// SAFETY: `Chain` stays pinned in a never-relocated heap allocation, `Handle`
+// has no thread affinity, and callers serialize access via `&mut EffectContext`.
+#[allow(
+    unsafe_code,
+    reason = "Pinned FfxApi effect descriptor chain and handle are Send (matching Context)"
+)]
+unsafe impl Send for EffectContext {}
+
 impl EffectContext {
     /// Create an effect context for `kind` on `device` through
     /// `ffxCreateContext`. Retries known backend descriptor kinds across SDK
@@ -418,6 +454,38 @@ impl EffectContext {
             crate::status_ok(library.dispatch(&mut handle.0, ptr::from_ref(desc.header())))
         });
         out.unwrap_or(Err(Error::NoVulkan))
+    }
+
+    /// Validate `desc`, inject the live `VkCommandBuffer` or
+    /// `ID3D12GraphicsCommandList*` from a wgpu encoder, and issue `ffxDispatch`.
+    pub fn dispatch_wgpu<D: EffectDispatch>(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        desc: &mut D,
+    ) -> Result<(), Error> {
+        let (_, expected, _) = self.kind.descriptors();
+        if desc.header().kind != expected {
+            return Err(Error::Descriptor {
+                expected,
+                found: desc.header().kind,
+            });
+        }
+        let library = Arc::clone(&self.library);
+        let mut handle = self.handle;
+        if let Some(res) = vulkan::with_command_buffer(encoder, |command_list| {
+            desc.set_command_list(command_list);
+            crate::status_ok(library.dispatch(&mut handle.0, ptr::from_ref(desc.header())))
+        }) {
+            return res;
+        }
+        #[cfg(windows)]
+        if let Some(res) = crate::dx12::with_command_list(encoder, |command_list| {
+            desc.set_command_list(command_list);
+            crate::status_ok(library.dispatch(&mut handle.0, ptr::from_ref(desc.header())))
+        }) {
+            return res;
+        }
+        Err(Error::NoVulkan)
     }
 }
 

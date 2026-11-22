@@ -37,6 +37,40 @@ mod swapchain;
 
 pub use adapter::PhysicalDeviceFeatures;
 
+/// Process-wide optional Vulkan swapchain/present interceptor for frame-generation
+/// providers (NVIDIA Streamline Vulkan interposer / AMD FFX Swapchain VK).
+/// Backend-neutral: `wgpu-hal` carries no vendor dependency.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct VulkanSwapchainInterceptor {
+    pub create_swapchain: Option<vk::PFN_vkCreateSwapchainKHR>,
+    pub destroy_swapchain: Option<vk::PFN_vkDestroySwapchainKHR>,
+    pub get_swapchain_images: Option<vk::PFN_vkGetSwapchainImagesKHR>,
+    pub acquire_next_image: Option<vk::PFN_vkAcquireNextImageKHR>,
+    pub queue_present: Option<vk::PFN_vkQueuePresentKHR>,
+    pub on_present_start: Option<fn()>,
+    pub on_present_end: Option<fn()>,
+}
+
+static VULKAN_SWAPCHAIN_INTERCEPTOR: RwLock<VulkanSwapchainInterceptor> =
+    RwLock::new(VulkanSwapchainInterceptor {
+        create_swapchain: None,
+        destroy_swapchain: None,
+        get_swapchain_images: None,
+        acquire_next_image: None,
+        queue_present: None,
+        on_present_start: None,
+        on_present_end: None,
+    });
+
+/// Register Vulkan swapchain/present interception hooks (e.g. Streamline or FSR FG).
+pub fn set_swapchain_interceptor(interceptor: VulkanSwapchainInterceptor) {
+    *VULKAN_SWAPCHAIN_INTERCEPTOR.write() = interceptor;
+}
+
+pub(crate) fn swapchain_interceptor() -> VulkanSwapchainInterceptor {
+    *VULKAN_SWAPCHAIN_INTERCEPTOR.read()
+}
+
 use alloc::{boxed::Box, ffi::CString, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, ffi::CStr, fmt, marker::PhantomData, mem, num::NonZeroU32};
 
