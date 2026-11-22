@@ -503,7 +503,8 @@ impl super::Adapter {
         );
 
         features.set(
-            wgt::Features::TEXTURE_BINDING_ARRAY
+            wgt::Features::BUFFER_BINDING_ARRAY
+                | wgt::Features::TEXTURE_BINDING_ARRAY
                 | wgt::Features::STORAGE_RESOURCE_BINDING_ARRAY
                 | wgt::Features::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING
                 | wgt::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING

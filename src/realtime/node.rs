@@ -215,9 +215,9 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     frame_count: Res<FrameCount>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
-    #[cfg(feature = "nrd")] nrd_pipelines: Res<super::nrd::NrdPipelines>,
-    #[cfg(feature = "fsr")] fsr_state: Res<super::fsr::FsrState>,
-    #[cfg(feature = "fsr")] fsr_pipelines: Res<super::fsr::FsrPipelines>,
+    #[cfg(feature = "nrd")] nrd_pipelines: Option<Res<super::nrd::NrdPipelines>>,
+    #[cfg(feature = "fsr")] fsr_state: Option<Res<super::fsr::FsrState>>,
+    #[cfg(feature = "fsr")] fsr_pipelines: Option<Res<super::fsr::FsrPipelines>>,
     #[cfg(feature = "graphics_debug")] query_capture: Option<
         Res<super::query_capture::PrimaryQueryCapture>,
     >,
@@ -731,7 +731,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
 
     drop(pass);
     #[cfg(feature = "nrd")]
-    {
+    if let Some(nrd_pipelines) = nrd_pipelines.as_deref() {
         let enabled = solarik_lighting.nrd && matches!(mode, ViewLightingMode::Standard);
         let span =
             enabled.then(|| diagnostics.time_span(ctx.command_encoder(), "solarik_lighting/nrd"));
@@ -745,7 +745,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
             &render_queue,
             ctx.command_encoder(),
             &pipeline_cache,
-            &nrd_pipelines,
+            nrd_pipelines,
             gbuffer,
             depth_buffer,
             motion_vectors,
@@ -758,6 +758,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         }
     }
     #[cfg(feature = "fsr")]
+    if let (Some(fsr_state), Some(fsr_pipelines)) = (fsr_state.as_deref(), fsr_pipelines.as_deref())
     {
         super::fsr::upscale(
             &s.fsr,
@@ -766,11 +767,11 @@ pub fn solarik_lighting<const PRIMARY: bool>(
             solarik_lighting.fsr_sharpness,
             reset_flags & 1 != 0,
             frame_count.0,
-            &fsr_state,
+            fsr_state,
             &render_device,
             ctx.command_encoder(),
             &pipeline_cache,
-            &fsr_pipelines,
+            fsr_pipelines,
             fsr_view,
             depth_buffer,
             motion_vectors,

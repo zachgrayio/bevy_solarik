@@ -115,8 +115,20 @@ impl Default for WgpuSettings {
                 Dx12Compiler::StaticDxc
             } else {
                 let dxc = "dxcompiler.dll";
+                let exe_dxc = if cfg!(target_os = "windows") {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|dir| dir.join(dxc)))
+                        .filter(|p| p.is_file())
+                } else {
+                    None
+                };
 
-                if cfg!(target_os = "windows") && std::fs::metadata(dxc).is_ok() {
+                if let Some(path) = exe_dxc {
+                    Dx12Compiler::DynamicDxc {
+                        dxc_path: path.to_string_lossy().into_owned(),
+                    }
+                } else if cfg!(target_os = "windows") && std::fs::metadata(dxc).is_ok() {
                     Dx12Compiler::DynamicDxc {
                         dxc_path: String::from(dxc),
                     }
@@ -138,8 +150,9 @@ impl Default for WgpuSettings {
             }
         }
         #[cfg(all(not(debug_assertions), feature = "raw_vulkan_init"))]
-        // intending to use vulkan even if backends may contain DX12
-        instance_flags.remove(InstanceFlags::VALIDATION_INDIRECT_CALL);
+        if !backends.is_some_and(|backends| backends.contains(Backends::DX12)) {
+            instance_flags.remove(InstanceFlags::VALIDATION_INDIRECT_CALL);
+        }
 
         instance_flags = instance_flags.with_env();
 
