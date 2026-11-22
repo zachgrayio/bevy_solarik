@@ -73,8 +73,36 @@ pass a raw `ID3D12Device*`/command-list pointer from the app's HAL interop.
 `EffectChainPlan` (`src/realtime/effects_chain.rs::effect_create_descs`) to the
 context factory. Headless stub-FFI tests drive the full chain for all three
 effects; no DLL/GPU/window is needed. What remains hardware-gated (D12) is
-feeding real per-signal `VkImage`s/buffers and the FG swapchain present
-interception from the render node, plus image review on RX 9000+/RTX 50-series.
+feeding real per-signal `VkImage`s/buffers for RR/radiance cache from the render
+node, plus image review on RX 9000+/RTX 50-series.
+
+## Frame generation presentation
+
+FSR FG only adds frames through AMD's **frame-generation swapchain**, so the
+swapchain is installed underneath wgpu (`crates/fsr-wgpu/src/frame_generation.rs`,
+driven by `src/frame_generation.rs`):
+
+- DX12: `install_presentation` registers wgpu-hal's
+  `Dx12SwapchainHooks::create_swapchain_for_hwnd`, so window swapchains are created
+  by `ffxCreateContextDescFrameGenerationSwapChainForHwndDX12` (+ version 4.0.0
+  descriptor). Wrapping an existing swapchain is not used: the provider releases
+  the input and recreates on the same HWND while wgpu-hal still holds a reference.
+- Vulkan: the provider needs four distinct queues (game, async compute, present,
+  image acquire). `register_frame_generation_queues` raises queue counts in the
+  create-device callback (`fsr_device_init`); `install_presentation` routes
+  wgpu-hal's `VulkanSwapchainInterceptor` through
+  `ffxQueryDescSwapchainReplacementFunctionsVK`, recreating in place on resize.
+  `VkSwapchainCreateInfoKHR` is embedded **by value** in the create descriptor.
+- Per frame the window view calls `record_frame`: `ffxConfigure` with the proxy
+  swapchain and a dispatch callback, and, when enabled, `PrepareV2` (render-res
+  depth/motion vectors, jitter, camera planes/basis) on the render encoder. The
+  swapchain calls the callback at present; the app never dispatches
+  `ffxDispatchDescFrameGeneration` itself.
+- `present_counters()` reports rendered frames vs real swapchain presents
+  (`GetLastPresentCount` / `getLastPresentCountFFXAPI`).
+- `SOLARIK_FSR_FG_SWAPCHAIN=0` keeps the plain swapchain and reports FSR FG
+  unsupported. Provider errors/warnings go to tracing target `fidelityfx`.
+- Not yet: HUD-less color or a UI resource, so UI is interpolated with the scene.
 
 ## Engine attach
 

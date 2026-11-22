@@ -100,6 +100,18 @@ impl EffectKind {
     pub fn create_desc(self) -> u64 {
         self.descriptors().0
     }
+
+    /// Whether `kind` is a dispatch descriptor this effect's context accepts.
+    /// Frame generation also takes its per-frame prepare descriptors.
+    pub fn accepts_dispatch(self, kind: u64) -> bool {
+        use effects::desc_types as d;
+        kind == self.descriptors().1
+            || (self == Self::FrameGeneration
+                && matches!(
+                    kind,
+                    d::FRAMEGENERATION_PREPARE | d::FRAMEGENERATION_PREPARE_V2
+                ))
+    }
 }
 
 /// Creation parameters shared by the three effects. Effect-specific fields are
@@ -217,6 +229,8 @@ enum Chain {
     },
     FrameGeneration {
         create: effects::CreateContextDescFrameGeneration,
+        /// Selects the 4.0 API (`PrepareV2`); without it providers assume 3.1.x.
+        version: effects::CreateContextDescFrameGenerationVersion,
         backend: BackendDesc,
     },
 }
@@ -272,6 +286,10 @@ impl Chain {
                     max_render_size: dims(cfg.max_render_size),
                     backbuffer_format: cfg.backbuffer_format,
                 },
+                version: effects::CreateContextDescFrameGenerationVersion {
+                    header: FfxApiHeader::new(effects::desc_types::FRAMEGENERATION_VERSION),
+                    version: version_id,
+                },
                 backend,
             },
         })
@@ -308,7 +326,16 @@ impl Chain {
         match self {
             Self::Denoiser { create, backend } => arm!(create, backend),
             Self::RadianceCache { create, backend } => arm!(create, backend),
-            Self::FrameGeneration { create, backend } => arm!(create, backend),
+            Self::FrameGeneration {
+                create,
+                version,
+                backend,
+            } => {
+                let backend: &mut FfxApiHeader = backend.header_mut();
+                version.header.next = ptr::from_mut(backend);
+                create.header.next = ptr::from_mut(&mut version.header);
+                ptr::from_mut(&mut create.header)
+            }
         }
     }
 }
@@ -340,6 +367,7 @@ impl_effect_dispatch!(
     effects::DispatchDescDenoiser,
     effects::DispatchDescRadianceCache,
     effects::DispatchDescFrameGeneration,
+    effects::DispatchDescFrameGenerationPrepareV2,
 );
 
 /// An owned `FfxApi` context for one of [`EffectKind`]. Implements `Drop` so the
@@ -420,15 +448,32 @@ impl EffectContext {
     /// Validates that the header kind matches this context's effect before
     /// the FFI call, so an RR context cannot be handed an FG descriptor.
     pub fn dispatch(&mut self, desc: &FfxApiHeader) -> Result<(), Error> {
-        let (_, expected, _) = self.kind.descriptors();
-        if desc.kind != expected {
-            return Err(Error::Descriptor {
-                expected,
-                found: desc.kind,
-            });
-        }
+        self.check_dispatch(desc.kind)?;
         let mut handle = self.handle;
         crate::status_ok(self.library.dispatch(&mut handle.0, ptr::from_ref(desc)))
+    }
+
+    /// Issue `ffxConfigure` for a caller-built configure descriptor chain.
+    pub fn configure(&mut self, desc: &FfxApiHeader) -> Result<(), Error> {
+        let mut handle = self.handle;
+        crate::status_ok(self.library.configure(&mut handle.0, ptr::from_ref(desc)))
+    }
+
+    /// The provider module and raw context handle, for present-time callbacks
+    /// that must call `ffxDispatch` without borrowing this context.
+    pub(crate) fn raw_parts(&self) -> (Arc<native::Module>, native::Handle) {
+        (Arc::clone(&self.library), self.handle)
+    }
+
+    fn check_dispatch(&self, kind: u64) -> Result<(), Error> {
+        if self.kind.accepts_dispatch(kind) {
+            Ok(())
+        } else {
+            Err(Error::Descriptor {
+                expected: self.kind.descriptors().1,
+                found: kind,
+            })
+        }
     }
 
     /// Validate `desc`, inject the live `VkCommandBuffer` from a wgpu encoder,
@@ -440,13 +485,7 @@ impl EffectContext {
         encoder: &mut wgpu::CommandEncoder,
         desc: &mut D,
     ) -> Result<(), Error> {
-        let (_, expected, _) = self.kind.descriptors();
-        if desc.header().kind != expected {
-            return Err(Error::Descriptor {
-                expected,
-                found: desc.header().kind,
-            });
-        }
+        self.check_dispatch(desc.header().kind)?;
         let library = Arc::clone(&self.library);
         let mut handle = self.handle;
         let out = vulkan::with_command_buffer(encoder, |command_list| {
@@ -463,13 +502,7 @@ impl EffectContext {
         encoder: &mut wgpu::CommandEncoder,
         desc: &mut D,
     ) -> Result<(), Error> {
-        let (_, expected, _) = self.kind.descriptors();
-        if desc.header().kind != expected {
-            return Err(Error::Descriptor {
-                expected,
-                found: desc.header().kind,
-            });
-        }
+        self.check_dispatch(desc.header().kind)?;
         let library = Arc::clone(&self.library);
         let mut handle = self.handle;
         if let Some(res) = vulkan::with_command_buffer(encoder, |command_list| {

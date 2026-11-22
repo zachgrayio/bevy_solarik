@@ -35,16 +35,27 @@ pub fn install_fsr_device_extensions(app: &mut App) {
 
     // SAFETY: the callback only appends `&'static CStr` device extensions that
     // the physical device actually exposes (enumerated via ash inside
-    // `register_device_extensions_for_adapter`). It never removes features,
-    // never changes queue-create infos or the create-info pNext chain, and
-    // never enables anything the device does not support. This upholds every
-    // safety requirement of `RawVulkanInitSettings::add_create_device_callback`.
+    // `register_device_extensions_for_adapter`) and, with frame generation,
+    // raises queue counts up to each family's reported `queueCount` (static
+    // priorities). It never removes features or queues, never touches the
+    // create-info pNext chain, and never enables anything the device does not
+    // support. This upholds every safety requirement of
+    // `RawVulkanInitSettings::add_create_device_callback`.
     unsafe {
         settings.add_create_device_callback(move |args, adapter, _additional_features| {
             let added = solarik_fsr_wgpu::register_device_extensions_for_adapter(args, adapter);
             if added > 0 {
                 tracing::info!(
                     "FFX: registered {added} supported Vulkan device extension(s) for FSR"
+                );
+            }
+            // The Vulkan frame-generation swapchain needs three queues besides
+            // wgpu's; requesting them only raises queue counts the family offers.
+            #[cfg(feature = "fsr_frame_generation")]
+            if !std::env::var(crate::frame_generation::FSR_FG_SWAPCHAIN_ENV).is_ok_and(|v| v == "0")
+            {
+                let _ = solarik_fsr_wgpu::frame_generation::register_frame_generation_queues(
+                    args, adapter,
                 );
             }
         });

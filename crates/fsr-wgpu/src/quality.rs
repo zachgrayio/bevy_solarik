@@ -157,8 +157,12 @@ pub mod formats {
     pub const R32G32_FLOAT: u32 = 6;
     /// `R8G8B8A8_UNORM`.
     pub const R8G8B8A8_UNORM: u32 = 10;
+    /// `B8G8R8A8_UNORM` (the usual DXGI/Vulkan swapchain storage format).
+    pub const B8G8R8A8_UNORM: u32 = 14;
     /// `R11G11B10_FLOAT`.
     pub const R11G11B10_FLOAT: u32 = 16;
+    /// `R10G10B10A2_UNORM`.
+    pub const R10G10B10A2_UNORM: u32 = 17;
     /// `R16G16_FLOAT`.
     pub const R16G16_FLOAT: u32 = 18;
     /// `R16_FLOAT`.
@@ -184,6 +188,8 @@ pub fn surface_format(format: wgpu::TextureFormat) -> u32 {
         F::Rgba16Float => formats::R16G16B16A16_FLOAT,
         F::Rg32Float => formats::R32G32_FLOAT,
         F::Rgba8Unorm | F::Rgba8UnormSrgb => formats::R8G8B8A8_UNORM,
+        F::Bgra8Unorm | F::Bgra8UnormSrgb => formats::B8G8R8A8_UNORM,
+        F::Rgb10a2Unorm => formats::R10G10B10A2_UNORM,
         F::Rg11b10Ufloat => formats::R11G11B10_FLOAT,
         F::Rg16Float => formats::R16G16_FLOAT,
         F::R16Float => formats::R16_FLOAT,

@@ -37,6 +37,11 @@ pub mod effect;
 pub mod effects;
 #[allow(
     unsafe_code,
+    reason = "The frame-generation swapchain calls back into Rust through a C function pointer"
+)]
+pub mod frame_generation;
+#[allow(
+    unsafe_code,
     reason = "The FfxApi ABI and raw Vulkan handles are isolated behind owned safe Rust values"
 )]
 mod native;
@@ -82,6 +87,9 @@ pub enum Error {
     /// Zero or oversized dimensions were requested.
     #[error("FSR requires nonzero dimensions no larger than 65535")]
     Dimensions,
+    /// The device or backend cannot host the requested effect.
+    #[error("FSR effect unsupported: {0}")]
+    Unsupported(&'static str),
     /// A descriptor header kind did not match the effect it was passed to.
     #[error("FfxApi descriptor kind mismatch: expected {expected:#x}, got {found:#x}")]
     Descriptor {
