@@ -24,16 +24,26 @@ pub(crate) fn resource(view: &wgpu::TextureView, state: u32) -> Option<native::R
     // SAFETY: `as_hal` borrows the live wgpu texture for the duration of this
     // call; the raw `ID3D12Resource*` is passed directly into the dispatch desc.
     let ptr = unsafe { texture.as_hal::<Dx12>().map(|hal| hal.raw_resource_ptr()) }?;
-    let usage = if state == quality::states::UNORDERED_ACCESS {
-        quality::usage::UAV
-    } else {
-        quality::usage::READ_ONLY
-    };
+    let fmt = texture.format();
+    let mut usage = quality::usage::READ_ONLY;
+    if fmt.has_depth_aspect() {
+        usage |= quality::usage::DEPTH_TARGET;
+    }
+    if fmt.has_stencil_aspect() {
+        usage |= quality::usage::STENCIL_TARGET;
+    }
+    if state == quality::states::UNORDERED_ACCESS
+        || texture
+            .usage()
+            .contains(wgpu::TextureUsages::STORAGE_BINDING)
+    {
+        usage |= quality::usage::UAV;
+    }
     Some(native::Resource {
         resource: ptr,
         description: native::ResourceDescription {
             resource_type: quality::resource_types::TEXTURE_2D,
-            format: quality::surface_format(texture.format()),
+            format: quality::surface_format(fmt),
             width: texture.width(),
             height: texture.height(),
             depth: 1,

@@ -209,6 +209,12 @@ fn prepare_fsr_upscaler(
         let create_flags = solarik_fsr_wgpu::flags::HIGH_DYNAMIC_RANGE
             | solarik_fsr_wgpu::flags::DEPTH_INVERTED
             | solarik_fsr_wgpu::flags::AUTO_EXPOSURE;
+        tracing::info!(
+            ?render_resolution,
+            ?upscaled_resolution,
+            quality = ?fsr.quality,
+            "Creating FSR upscaler context"
+        );
         match solarik_fsr_wgpu::Context::new(
             &library.0,
             render_device.wgpu_device(),
@@ -217,6 +223,7 @@ fn prepare_fsr_upscaler(
             create_flags,
         ) {
             Ok(context) => {
+                tracing::info!("FSR upscaler context created");
                 commands.entity(entity).insert((
                     FsrRenderContext {
                         context: Mutex::new(context),
