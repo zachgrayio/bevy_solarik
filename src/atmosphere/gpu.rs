@@ -111,7 +111,11 @@ impl Plugin for AtmospherePlugin {
                 .configure_sets(
                     Core3d,
                     AtmosphereBackground
-                        .after(main_opaque_pass_3d)
+                        // Solarik's raster deferred resolve runs after this background and
+                        // before the opaque pass. Ordering the sky after the opaque pass
+                        // closes a cycle with that constraint, so the sky draws first and
+                        // the lit surfaces overwrite it.
+                        .before(main_opaque_pass_3d)
                         .before(main_transparent_pass_3d)
                         .in_set(Core3dSystems::MainPass),
                 )
