@@ -568,14 +568,20 @@ pub fn record_frame(
     let mut guard = global_slot().lock().unwrap();
     let sl = guard.as_mut().ok_or(Error::NotInitialized)?;
 
+    let enabled = num_frames_to_generate > 0 && sl.capabilities.dlss_g_supported;
+    if !enabled && sl.last_mode == DLSSG_MODE_OFF {
+        return Ok(FrameGenState {
+            max_generated_frames: sl.capabilities.max_generated_frames,
+            ..Default::default()
+        });
+    }
+
     let mut token: *mut BaseStructure = ptr::null_mut();
     let tok_res = unsafe { (sl.core.sl_get_new_frame_token)(&mut token, &frame_index) };
     if tok_res != SL_RESULT_OK || token.is_null() {
         return Err(Error::Api("slGetNewFrameToken", tok_res));
     }
     sl.active_frame_token = token;
-
-    let enabled = num_frames_to_generate > 0 && sl.capabilities.dlss_g_supported;
     let clamped_gen = if enabled {
         num_frames_to_generate.min(sl.capabilities.max_generated_frames.max(1))
     } else {
