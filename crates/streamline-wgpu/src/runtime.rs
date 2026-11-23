@@ -477,19 +477,24 @@ pub fn install_swapchain_interception() {
             });
             tracing::info!("Streamline DX12 swapchain/present interception hooks installed");
         }
-    } else if sl.core.vk_create_swapchain.is_some() && sl.core.vk_queue_present.is_some() {
+    } else {
+        // On Vulkan, `wgpu-hal` creates `VkInstance`/`VkDevice`/`VkSurfaceKHR`
+        // directly (not through `sl.interposer.dll`'s Vulkan loader proxy), so
+        // routing `vkCreateSwapchainKHR` into `sl.interposer.dll` fails with
+        // `Invalid surface`. Attach only the present markers (PCL/Reflex) and
+        // let `wgpu-hal` drive the real `VK_KHR_swapchain` functions directly.
         wgpu::hal::vulkan::set_swapchain_interceptor(
             wgpu::hal::vulkan::VulkanSwapchainInterceptor {
-                create_swapchain: sl.core.vk_create_swapchain,
-                destroy_swapchain: sl.core.vk_destroy_swapchain,
-                get_swapchain_images: sl.core.vk_get_swapchain_images,
-                acquire_next_image: sl.core.vk_acquire_next_image,
-                queue_present: sl.core.vk_queue_present,
+                create_swapchain: None,
+                destroy_swapchain: None,
+                get_swapchain_images: None,
+                acquire_next_image: None,
+                queue_present: None,
                 on_present_start: Some(on_present_start),
                 on_present_end: Some(on_present_end),
             },
         );
-        tracing::info!("Streamline Vulkan swapchain/present interception hooks installed");
+        tracing::info!("Streamline Vulkan present-marker hooks installed");
     }
 }
 
