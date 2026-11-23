@@ -233,9 +233,11 @@ impl Plugin for SolarikLightingPlugin {
             .add_systems(
                 Core3d,
                 solarik_lighting::<false>
-                    // Resolve deferred lighting after the atmosphere background so the
-                    // sky is present before lit G-buffer surfaces composite over it.
-                    .after(crate::atmosphere::AtmosphereBackground)
+                    // Resolve deferred lighting before forward opaque/masked content.
+                    // Otherwise unlit sprites and emissive VFX are overwritten by the
+                    // G-buffer behind them. The atmosphere sky is a later pass and does
+                    // not depend on this resolve.
+                    .before(main_opaque_pass_3d)
                     .before(main_transparent_pass_3d)
                     .in_set(Core3dSystems::MainPass),
             )
