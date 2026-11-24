@@ -2,6 +2,10 @@ mod effects_chain;
 mod extract;
 #[cfg(feature = "fsr")]
 mod fsr;
+#[cfg(feature = "fsr")]
+pub mod fsr_upscaler;
+#[cfg(feature = "fsr")]
+pub use fsr_upscaler::{FsrUpscaler, FsrUpscalerPlugin, FsrUpscalerSupported};
 #[cfg(feature = "graphics_debug")]
 pub mod graphics_debug;
 mod node;

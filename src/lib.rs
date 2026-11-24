@@ -48,6 +48,8 @@ pub mod thin_volume;
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
     pub use super::SolarikPlugins;
+    #[cfg(feature = "fsr")]
+    pub use crate::realtime::{FsrQualityMode, FsrUpscaler, FsrUpscalerSupported};
     pub use crate::realtime::{SolariQuality, SolarikLighting};
     pub use crate::scene::{
         RaytracingAssembly3d, RaytracingAssemblyPart, RaytracingMesh3d, SolarikAlphaTesting,
@@ -74,9 +76,12 @@ pub struct SolarikPlugins;
 
 impl PluginGroup for SolarikPlugins {
     fn build(self) -> PluginGroupBuilder {
-        PluginGroupBuilder::start::<Self>()
+        let group = PluginGroupBuilder::start::<Self>()
             .add(RaytracingScenePlugin)
-            .add(SolarikLightingPlugin)
+            .add(SolarikLightingPlugin);
+        #[cfg(feature = "fsr")]
+        let group = group.add(realtime::FsrUpscalerPlugin);
+        group
     }
 }
 

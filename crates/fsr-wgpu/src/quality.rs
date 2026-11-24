@@ -134,8 +134,14 @@ pub mod states {
 pub mod usage {
     /// Read-only resource.
     pub const READ_ONLY: u32 = 0;
+    /// Resource used as a render target.
+    pub const RENDER_TARGET: u32 = 1 << 0;
     /// Resource used as an unordered-access view (storage texture).
     pub const UAV: u32 = 1 << 1;
+    /// Resource used as a depth target (required for depth aspect views on Vulkan).
+    pub const DEPTH_TARGET: u32 = 1 << 2;
+    /// Resource used as a stencil target.
+    pub const STENCIL_TARGET: u32 = 1 << 5;
 }
 
 /// FfxApi surface formats, from `FfxApiSurfaceFormat` in `ffx_api_types.h`.

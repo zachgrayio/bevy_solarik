@@ -27,6 +27,12 @@
 //! Register them in the application's device-creation callback before enabling
 //! FSR, and see `docs/fsr.md` in the parent crate for the measured behaviour.
 
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "wgpu 30 exposes raw D3D12 handles only behind unsafe as_hal accessors"
+)]
+mod dx12;
 pub mod effect;
 pub mod effects;
 #[allow(
@@ -40,6 +46,8 @@ pub mod quality;
     reason = "wgpu 30 exposes raw Vulkan handles only behind unsafe as_hal accessors"
 )]
 mod vulkan;
+
+pub use native::BackendKind;
 
 pub use quality::{
     QualityMode, dispatch_flags, effect_sub_id, flags, formats, resource_types, states,
@@ -104,11 +112,28 @@ pub struct Library {
 }
 
 impl Library {
-    /// Load the FSR provider from the first available candidate path.
+    /// Load the Vulkan FSR provider from the first available candidate path.
     pub fn load() -> Result<Self, Error> {
+        Self::load_for_backend(BackendKind::Vulkan)
+    }
+
+    /// Load the FSR provider for an explicit graphics backend (Vulkan or DX12).
+    pub fn load_for_backend(backend: BackendKind) -> Result<Self, Error> {
         Ok(Self {
-            module: Arc::new(native::Module::load()?),
+            module: Arc::new(native::Module::load_for_backend(backend)?),
         })
+    }
+
+    /// Load the FSR provider matching the active wgpu device's backend.
+    pub fn load_for_device(device: &wgpu::Device) -> Result<Self, Error> {
+        if vulkan::device_context(device).is_some() {
+            return Self::load_for_backend(BackendKind::Vulkan);
+        }
+        #[cfg(windows)]
+        if dx12::device_ptr(device).is_some() {
+            return Self::load_for_backend(BackendKind::Dx12);
+        }
+        Err(Error::NoVulkan)
     }
 
     /// Whether an FSR provider is available on this machine. Useful for a
@@ -153,19 +178,39 @@ fn backend_types() -> Vec<u64> {
     native::BACKEND_VK_TYPES.to_vec()
 }
 
+enum PinnedCreate {
+    Vulkan(
+        #[expect(
+            dead_code,
+            reason = "pinned heap allocation kept alive until ffxDestroyContext"
+        )]
+        Box<native::PinnedDescriptors>,
+    ),
+    #[cfg(windows)]
+    Dx12(
+        #[expect(
+            dead_code,
+            reason = "pinned heap allocation kept alive until ffxDestroyContext"
+        )]
+        Box<native::PinnedDx12Descriptors>,
+    ),
+}
+
 /// One camera's FSR upscaler context. Controllers and the chained create/backend
 /// descriptors are retained for the context's lifetime; a resize or quality
 /// change requires a new context, exactly like DLSS Super Resolution.
 pub struct Context {
     library: Arc<native::Module>,
     handle: native::Handle,
-    _descriptors: Box<native::PinnedDescriptors>,
+    _descriptors: PinnedCreate,
+    backend: BackendKind,
+    device: Option<wgpu::Device>,
     max_render_size: [u32; 2],
     max_upscale_size: [u32; 2],
 }
 
 impl Context {
-    /// Create an FSR context for the wgpu Vulkan device.
+    /// Create an FSR context for the active wgpu device (Vulkan or Windows DX12).
     ///
     /// `flags` is a combination of [`flags`] (`HIGH_DYNAMIC_RANGE` for linear HDR
     /// render targets). `max_render_size`/`max_upscale_size` bound the resolutions the
@@ -186,7 +231,6 @@ impl Context {
                 return Err(Error::Dimensions);
             }
         }
-        let device_context = vulkan::device_context(device).ok_or(Error::NoVulkan)?;
         let create = native::CreateContextDescUpscale {
             header: native::FfxApiHeader::new(native::CREATE_CONTEXT_DESC_UPSCALE),
             flags,
@@ -200,38 +244,66 @@ impl Context {
             },
             message: std::ptr::null_mut(),
         };
-        let backend = native::CreateBackendVkDesc {
-            header: native::FfxApiHeader::new(native::BACKEND_VK_TYPES[0]),
-            device_context,
-        };
-        let mut descriptors = native::pin_descriptors(create, backend);
-        let mut handle: native::Context = std::ptr::null_mut();
-        let mut status = 0u32;
-        for kind in backend_types() {
-            // The descriptor chain is pinned on the heap; only the backend
-            // discriminator changes between attempts across SDK generations.
-            descriptors.backend.header.kind = kind;
-            let header = std::ptr::from_mut(&mut descriptors.create.header);
-            status = library.module.create_context(&mut handle, header);
-            if status == 0 {
-                break;
+
+        if let Some(device_context) = vulkan::device_context(device) {
+            let backend = native::CreateBackendVkDesc {
+                header: native::FfxApiHeader::new(native::BACKEND_VK_TYPES[0]),
+                device_context,
+            };
+            let mut descriptors = native::pin_descriptors(create, backend);
+            let mut handle: native::Context = std::ptr::null_mut();
+            let mut status = 0u32;
+            for kind in backend_types() {
+                descriptors.backend.header.kind = kind;
+                let header = std::ptr::from_mut(&mut descriptors.create.header);
+                status = library.module.create_context(&mut handle, header);
+                if status == 0 {
+                    break;
+                }
+                if !matches!(status, 1 | 2 | 4 | 6) {
+                    return Err(Error::Status(status));
+                }
+                handle = std::ptr::null_mut();
             }
-            // Descriptor/provider mismatches are expected across SDK generations.
-            if !matches!(status, 1 | 2 | 4 | 6) {
+            if handle.is_null() {
                 return Err(Error::Status(status));
             }
-            handle = std::ptr::null_mut();
+            return Ok(Self {
+                library: Arc::clone(&library.module),
+                handle: native::Handle(handle),
+                _descriptors: PinnedCreate::Vulkan(descriptors),
+                backend: BackendKind::Vulkan,
+                device: Some(device.clone()),
+                max_render_size,
+                max_upscale_size,
+            });
         }
-        if handle.is_null() {
-            return Err(Error::Status(status));
+
+        #[cfg(windows)]
+        if let Some(raw_device) = dx12::device_ptr(device) {
+            let backend = effects::CreateBackendDx12Desc {
+                header: native::FfxApiHeader::new(effects::desc_types::BACKEND_DX12),
+                device: raw_device,
+            };
+            let mut descriptors = native::pin_dx12_descriptors(create, backend);
+            let mut handle: native::Context = std::ptr::null_mut();
+            let header = std::ptr::from_mut(&mut descriptors.create.header);
+            let status = library.module.create_context(&mut handle, header);
+            if status != 0 || handle.is_null() {
+                return Err(Error::Status(status));
+            }
+            return Ok(Self {
+                library: Arc::clone(&library.module),
+                handle: native::Handle(handle),
+                _descriptors: PinnedCreate::Dx12(descriptors),
+                backend: BackendKind::Dx12,
+                device: Some(device.clone()),
+                max_render_size,
+                max_upscale_size,
+            });
         }
-        Ok(Self {
-            library: Arc::clone(&library.module),
-            handle: native::Handle(handle),
-            _descriptors: descriptors,
-            max_render_size,
-            max_upscale_size,
-        })
+
+        Err(Error::NoVulkan)
     }
 
     /// The maximum render resolution this context was created for.
@@ -323,10 +395,47 @@ impl Context {
         Self {
             library: module,
             handle: native::Handle(std::ptr::NonNull::<u8>::dangling().as_ptr().cast()),
-            _descriptors: native::stub_descriptors(),
+            _descriptors: PinnedCreate::Vulkan(native::stub_descriptors()),
+            backend: BackendKind::Vulkan,
+            device: None,
             max_render_size: [1920, 1080],
             max_upscale_size: [1920, 1080],
         }
+    }
+
+    /// Transition input textures to `RESOURCE` and output texture to
+    /// `STORAGE_READ_WRITE` on `encoder` before dispatching FSR on a subsequent
+    /// command buffer (mirrors `dlss_wgpu`).
+    pub fn transition_resources(
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        motion_vectors: &wgpu::TextureView,
+        output: &wgpu::TextureView,
+    ) {
+        let barriers = [
+            wgpu::TextureTransition {
+                texture: color.texture(),
+                selector: None,
+                state: wgpu::TextureUses::RESOURCE,
+            },
+            wgpu::TextureTransition {
+                texture: depth.texture(),
+                selector: None,
+                state: wgpu::TextureUses::RESOURCE,
+            },
+            wgpu::TextureTransition {
+                texture: motion_vectors.texture(),
+                selector: None,
+                state: wgpu::TextureUses::RESOURCE,
+            },
+            wgpu::TextureTransition {
+                texture: output.texture(),
+                selector: None,
+                state: wgpu::TextureUses::STORAGE_READ_WRITE,
+            },
+        ];
+        encoder.transition_resources(std::iter::empty(), barriers.into_iter());
     }
 
     /// Record FSR's upscaling passes into `params.encoder`.
@@ -369,43 +478,88 @@ impl Context {
             view_space_to_meters_factor: params.view_space_to_meters_factor,
             flags: params.flags,
         };
-        desc.color = resource(params.color, states::COMPUTE_READ)?;
-        desc.depth = resource(params.depth, states::COMPUTE_READ)?;
-        desc.motion_vectors = resource(params.motion_vectors, states::COMPUTE_READ)?;
-        desc.exposure = optional_resource(params.exposure, states::COMPUTE_READ)?;
-        desc.reactive = optional_resource(params.reactive, states::COMPUTE_READ)?;
-        desc.transparency_and_composition =
-            optional_resource(params.transparency_and_composition, states::COMPUTE_READ)?;
-        desc.output = resource(params.output, states::UNORDERED_ACCESS)?;
+        let backend = self.backend;
+        desc.color = resource_for(backend, params.color, states::COMPUTE_READ)?;
+        desc.depth = resource_for(backend, params.depth, states::COMPUTE_READ)?;
+        desc.motion_vectors = resource_for(backend, params.motion_vectors, states::COMPUTE_READ)?;
+        desc.exposure = optional_resource(backend, params.exposure, states::COMPUTE_READ)?;
+        desc.reactive = optional_resource(backend, params.reactive, states::COMPUTE_READ)?;
+        desc.transparency_and_composition = optional_resource(
+            backend,
+            params.transparency_and_composition,
+            states::COMPUTE_READ,
+        )?;
+        desc.output = resource_for(backend, params.output, states::UNORDERED_ACCESS)?;
 
         let library = Arc::clone(&self.library);
         let mut handle = self.handle;
-        let result = vulkan::with_command_buffer(params.encoder, |command_list| {
-            desc.command_list = command_list;
-            let status =
-                library.dispatch(&mut handle.0, std::ptr::from_ref(&desc.header).cast_mut());
-            status_ok(status)
-        });
-        result.unwrap_or(Err(Error::NoVulkan))
+        match backend {
+            BackendKind::Vulkan => {
+                let result = vulkan::with_command_buffer(params.encoder, |command_list| {
+                    desc.command_list = command_list;
+                    let status = library
+                        .dispatch(&mut handle.0, std::ptr::from_ref(&desc.header).cast_mut());
+                    status_ok(status)
+                });
+                result.unwrap_or(Err(Error::NoVulkan))
+            }
+            BackendKind::Dx12 => {
+                #[cfg(windows)]
+                {
+                    let result = dx12::with_command_list(params.encoder, |command_list| {
+                        desc.command_list = command_list;
+                        let status = library
+                            .dispatch(&mut handle.0, std::ptr::from_ref(&desc.header).cast_mut());
+                        status_ok(status)
+                    });
+                    result.unwrap_or(Err(Error::NoVulkan))
+                }
+                #[cfg(not(windows))]
+                {
+                    Err(Error::NoVulkan)
+                }
+            }
+        }
     }
 }
 
-fn resource(view: &wgpu::TextureView, state: u32) -> Result<native::Resource, Error> {
-    vulkan::resource(view, state).ok_or(Error::NoVulkan)
+fn resource_for(
+    backend: BackendKind,
+    view: &wgpu::TextureView,
+    state: u32,
+) -> Result<native::Resource, Error> {
+    match backend {
+        BackendKind::Vulkan => vulkan::resource(view, state).ok_or(Error::NoVulkan),
+        BackendKind::Dx12 => {
+            #[cfg(windows)]
+            {
+                dx12::resource(view, state).ok_or(Error::NoVulkan)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (view, state);
+                Err(Error::NoVulkan)
+            }
+        }
+    }
 }
 
 fn optional_resource(
+    backend: BackendKind,
     view: Option<&wgpu::TextureView>,
     state: u32,
 ) -> Result<native::Resource, Error> {
     match view {
-        Some(view) => resource(view, state),
+        Some(view) => resource_for(backend, view, state),
         None => Ok(native::Resource::default()),
     }
 }
 
 impl Drop for Context {
     fn drop(&mut self) {
+        if let Some(device) = &self.device {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        }
         let mut handle = self.handle.0;
         let status = self.library.destroy_context(&mut handle);
         if status != 0 {

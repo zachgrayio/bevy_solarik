@@ -275,61 +275,80 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
-// SDK 2.4.0 ships a tiny loader plus per-effect DLLs. The loader is the
-// FfxApi entry point; it resolves effect DLLs beside itself / the exe. Both
-// Vulkan and DX12 sets are listed because the backend is chosen at runtime.
-// The 1.1.x monolithic names remain last as a fallback for older providers.
-const WINDOWS_NAMES: &[&str] = &[
-    "amd_fidelityfx_loader_vk.dll",
-    "amd_fidelityfx_loader_dx12.dll",
-    "amd_fidelityfx_vk.dll",
-    "amd_fidelityfx_dx12.dll",
-];
-const UNIX_NAMES: &[&str] = &["libamd_fidelityfx_loader_vk.so", "libamd_fidelityfx_vk.so"];
+/// Graphics API backend for which to load the FidelityFX provider DLL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendKind {
+    /// Vulkan (`amd_fidelityfx_loader_vk.dll` / `.so`).
+    Vulkan,
+    /// DirectX 12 (`amd_fidelityfx_loader_dx12.dll`, Windows only).
+    Dx12,
+}
 
-fn names() -> &'static [&'static str] {
-    if cfg!(windows) {
-        WINDOWS_NAMES
-    } else {
-        UNIX_NAMES
+const WINDOWS_VK_NAMES: &[&str] = &["amd_fidelityfx_loader_vk.dll", "amd_fidelityfx_vk.dll"];
+const WINDOWS_DX12_NAMES: &[&str] = &["amd_fidelityfx_loader_dx12.dll", "amd_fidelityfx_dx12.dll"];
+const UNIX_VK_NAMES: &[&str] = &["libamd_fidelityfx_loader_vk.so", "libamd_fidelityfx_vk.so"];
+
+fn names_for(backend: BackendKind) -> &'static [&'static str] {
+    match (cfg!(windows), backend) {
+        (true, BackendKind::Vulkan) => WINDOWS_VK_NAMES,
+        (true, BackendKind::Dx12) => WINDOWS_DX12_NAMES,
+        (false, BackendKind::Vulkan) => UNIX_VK_NAMES,
+        (false, BackendKind::Dx12) => &[],
     }
 }
 
-/// Ordered search: compile-time/runtime `FSR_DLL`, then `FSR_RUNTIME_DIR`, then
-/// the pinned `FSR_NATIVE_LIBS/<TARGET>/ffx`, then bare names left to the
-/// platform loader (executable directory / system path). This is the same
-/// artifact-directory convention the DLSS and NRD build scripts use.
-fn candidate_paths() -> Vec<PathBuf> {
+/// Ordered search: compile-time/runtime `FSR_DLL`, then executable directory
+/// (standalone shipped builds), then `FSR_RUNTIME_DIR`, then `FSR_NATIVE_DIR`,
+/// then bare names left to the platform loader.
+fn candidate_paths(backend: BackendKind) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let explicit =
         std::env::var_os("FSR_DLL").or_else(|| option_env!("FSR_DLL").map(OsString::from));
     if let Some(path) = explicit {
         out.push(PathBuf::from(path));
     }
-    let dirs: Vec<PathBuf> = [
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        dirs.push(parent.to_path_buf());
+    }
+    for dir in [
         std::env::var_os("FSR_RUNTIME_DIR"),
         option_env!("FSR_RUNTIME_DIR").map(OsString::from),
         option_env!("FSR_NATIVE_DIR").map(OsString::from),
     ]
     .into_iter()
     .flatten()
-    .map(PathBuf::from)
-    .collect();
+    {
+        dirs.push(PathBuf::from(dir));
+    }
+    if let Some(root) =
+        std::env::var_os("FSR_NATIVE_LIBS").or_else(|| std::env::var_os("BARD_NATIVE_LIBS"))
+    {
+        let target = if cfg!(windows) {
+            "x86_64-pc-windows-msvc"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        };
+        dirs.push(PathBuf::from(root).join(target).join("ffx"));
+    }
+    let names = names_for(backend);
     for dir in &dirs {
-        for name in names() {
+        for name in names {
             out.push(dir.join(name));
         }
     }
-    for name in names() {
+    for name in names {
         out.push(PathBuf::from(name));
     }
     out
 }
 
 impl Module {
-    pub(crate) fn load() -> Result<Self, LoadError> {
+    pub(crate) fn load_for_backend(backend: BackendKind) -> Result<Self, LoadError> {
         let mut attempted = Vec::new();
-        for path in candidate_paths() {
+        for path in candidate_paths(backend) {
             let library = match unsafe { libloading::Library::new(&path) } {
                 Ok(library) => library,
                 Err(error) => {
@@ -344,7 +363,11 @@ impl Module {
                     continue;
                 }
             };
-            tracing::info!(path = %path.display(), "AMD FidelityFX FSR provider loaded");
+            tracing::info!(
+                ?backend,
+                path = %path.display(),
+                "AMD FidelityFX FSR provider loaded"
+            );
             return Ok(Self {
                 _library: Some(library),
                 functions,
@@ -466,6 +489,28 @@ pub(crate) fn pin_descriptors(
     backend: CreateBackendVkDesc,
 ) -> Box<PinnedDescriptors> {
     let mut pinned = Box::new(PinnedDescriptors { create, backend });
+    pinned.create.header.next = std::ptr::from_mut(&mut pinned.backend.header);
+    pinned
+}
+
+/// DX12 counterpart of [`PinnedDescriptors`].
+#[cfg(windows)]
+pub(crate) struct PinnedDx12Descriptors {
+    pub create: CreateContextDescUpscale,
+    pub backend: crate::effects::CreateBackendDx12Desc,
+}
+
+// SAFETY: `pNext` stays inside this never-relocated heap allocation and all
+// access is serialized through the owning Context.
+#[cfg(windows)]
+unsafe impl Send for PinnedDx12Descriptors {}
+
+#[cfg(windows)]
+pub(crate) fn pin_dx12_descriptors(
+    create: CreateContextDescUpscale,
+    backend: crate::effects::CreateBackendDx12Desc,
+) -> Box<PinnedDx12Descriptors> {
+    let mut pinned = Box::new(PinnedDx12Descriptors { create, backend });
     pinned.create.header.next = std::ptr::from_mut(&mut pinned.backend.header);
     pinned
 }
