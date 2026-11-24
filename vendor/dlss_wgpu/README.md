@@ -28,6 +28,19 @@ the pinned 310.9.1 Rust declarations. Regenerate both declarations and wrapper a
 when changing SDK versions. The SDK is separately licensed; application artifacts
 retain NVIDIA's license. This crate contains no NVIDIA native SDK binaries.
 
+## External runtime ownership
+
+Features retain their `Arc<Mutex<DlssSdk>>` through native release. `DlssSdk::retain_runtime`
+accepts an opaque shared owner that remains alive through SDK parameter destruction; it must
+not own that SDK back and create a reference cycle. The consuming renderer owns the complete
+[graphics-session shutdown contract](../../docs/graphics-session.md), including provider DLL
+code remaining loaded until queue/device destruction finishes.
+
+The D3D12 bootstrap retains its own COM device reference. Its raw-device initialization is
+unsafe: the input must be a live COM interface. Explicit early parameter release is allowed
+only after every feature/operation client has finished. Direct NGX callers must serialize API
+use; retaining a lifetime owner does not make unsynchronized native calls thread safe.
+
 ## Regenerating the frame-generation bindings
 
 `src/wrapper.h` includes `nvsdk_ngx_defs_dlssg.h` (the C-safe DLSS-G definitions
