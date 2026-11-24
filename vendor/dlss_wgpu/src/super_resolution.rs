@@ -80,17 +80,37 @@ impl DlssSuperResolution {
         });
 
         let mut feature = ptr::null_mut();
-        unsafe {
-            command_encoder.as_hal_mut::<Vulkan, _, _>(|command_encoder| {
-                check_ngx_result(NGX_VULKAN_CREATE_DLSS_EXT(
-                    command_encoder.unwrap().raw_handle(),
-                    1,
-                    1,
-                    &mut feature,
-                    locked_sdk.parameters,
-                    &mut create_params,
-                ))
-            })?
+        match locked_sdk.backend {
+            crate::sdk::SdkBackend::Vulkan => unsafe {
+                command_encoder.as_hal_mut::<Vulkan, _, _>(|command_encoder| {
+                    check_ngx_result(NGX_VULKAN_CREATE_DLSS_EXT(
+                        command_encoder.unwrap().raw_handle(),
+                        1,
+                        1,
+                        &mut feature,
+                        locked_sdk.parameters,
+                        &mut create_params,
+                    ))
+                })?
+            },
+            #[cfg(all(windows, feature = "dx12"))]
+            crate::sdk::SdkBackend::Dx12 { .. } => unsafe {
+                command_encoder.as_hal_mut::<wgpu::hal::api::Dx12, _, _>(|command_encoder| {
+                    let cmd_list = command_encoder
+                        .unwrap()
+                        .raw_command_list_ptr()
+                        .unwrap()
+                        .cast::<ID3D12GraphicsCommandList>();
+                    check_ngx_result(NGX_D3D12_CREATE_DLSS_EXT(
+                        cmd_list,
+                        1,
+                        1,
+                        &mut feature,
+                        locked_sdk.parameters,
+                        &mut create_params,
+                    ))
+                })?
+            },
         }
 
         queue.submit([command_encoder.finish()]);
@@ -128,6 +148,92 @@ impl DlssSuperResolution {
         let partial_texture_size = render_parameters
             .partial_texture_size
             .unwrap_or(self.max_render_resolution);
+
+        #[cfg(all(windows, feature = "dx12"))]
+        if matches!(sdk.backend, crate::sdk::SdkBackend::Dx12 { .. }) {
+            let (exposure_ptr, exposure_scale, pre_exposure) = match &render_parameters.exposure {
+                DlssSuperResolutionExposure::Manual {
+                    exposure,
+                    exposure_scale,
+                    pre_exposure,
+                } => (
+                    texture_to_d3d12(exposure),
+                    exposure_scale.unwrap_or(1.0),
+                    pre_exposure.unwrap_or(0.0),
+                ),
+                DlssSuperResolutionExposure::Automatic => (ptr::null_mut(), 0.0, 0.0),
+            };
+            let z = ptr::null_mut::<ID3D12Resource>();
+            let mut eval_params = NVSDK_NGX_D3D12_DLSS_Eval_Params {
+                Feature: NVSDK_NGX_D3D12_Feature_Eval_Params {
+                    pInColor: texture_to_d3d12(render_parameters.color),
+                    pInOutput: texture_to_d3d12(render_parameters.dlss_output),
+                    InSharpness: 0.0,
+                },
+                pInDepth: texture_to_d3d12(render_parameters.depth),
+                pInMotionVectors: texture_to_d3d12(render_parameters.motion_vectors),
+                InJitterOffsetX: render_parameters.jitter_offset[0],
+                InJitterOffsetY: render_parameters.jitter_offset[1],
+                InRenderSubrectDimensions: NVSDK_NGX_Dimensions {
+                    Width: partial_texture_size[0],
+                    Height: partial_texture_size[1],
+                },
+                InReset: render_parameters.reset as _,
+                InMVScaleX: render_parameters.motion_vector_scale.unwrap_or([1.0, 1.0])[0],
+                InMVScaleY: render_parameters.motion_vector_scale.unwrap_or([1.0, 1.0])[1],
+                pInTransparencyMask: z,
+                pInExposureTexture: exposure_ptr,
+                pInBiasCurrentColorMask: render_parameters
+                    .bias
+                    .map_or(z, texture_to_d3d12),
+                InColorSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
+                InDepthSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
+                InMVSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
+                InTranslucencySubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
+                InBiasCurrentColorSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
+                InOutputSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
+                InPreExposure: pre_exposure,
+                InExposureScale: exposure_scale,
+                InIndicatorInvertXAxis: 0,
+                InIndicatorInvertYAxis: 0,
+                GBufferSurface: NVSDK_NGX_D3D12_GBuffer { pInAttrib: [z; 17] },
+                InToneMapperType: NVSDK_NGX_ToneMapperType_NVSDK_NGX_TONEMAPPER_STRING,
+                pInMotionVectors3D: z,
+                pInIsParticleMask: z,
+                pInAnimatedTextureMask: z,
+                pInDepthHighRes: z,
+                pInPositionViewSpace: z,
+                InFrameTimeDeltaInMsec: 0.0,
+                pInRayTracingHitDistance: z,
+                pInMotionVectorsReflections: z,
+            };
+
+            command_encoder.transition_resources(iter::empty(), render_parameters.barrier_list());
+
+            let mut dlss_command_encoder =
+                self.device
+                    .create_command_encoder(&CommandEncoderDescriptor {
+                        label: Some("dlss_super_resolution"),
+                    });
+            unsafe {
+                dlss_command_encoder.as_hal_mut::<wgpu::hal::api::Dx12, _, _>(
+                    |command_encoder| {
+                        let cmd_list = command_encoder
+                            .unwrap()
+                            .raw_command_list_ptr()
+                            .unwrap()
+                            .cast::<ID3D12GraphicsCommandList>();
+                        check_ngx_result(NGX_D3D12_EVALUATE_DLSS_EXT(
+                            cmd_list,
+                            self.feature,
+                            sdk.parameters,
+                            &mut eval_params,
+                        ))
+                    },
+                )?;
+            }
+            return Ok(dlss_command_encoder.finish());
+        }
 
         // NGX reads these through raw pointers during EvaluateFeature. The bindings
         // must stay alive until the evaluate call below.
@@ -247,16 +353,38 @@ impl DlssSuperResolution {
 
 impl Drop for DlssSuperResolution {
     fn drop(&mut self) {
-        unsafe {
-            let hal_device = self.device.as_hal::<Vulkan>().unwrap();
-            hal_device
-                .raw_device()
-                .device_wait_idle()
-                .expect("Failed to wait for idle device when destroying DlssSuperResolution");
+        let backend = self.sdk.lock().unwrap().backend;
+        match backend {
+            crate::sdk::SdkBackend::Vulkan => unsafe {
+                let hal_device = self.device.as_hal::<Vulkan>().unwrap();
+                hal_device
+                    .raw_device()
+                    .device_wait_idle()
+                    .expect("Failed to wait for idle device when destroying DlssSuperResolution");
 
-            check_ngx_result(NVSDK_NGX_VULKAN_ReleaseFeature(self.feature))
-                .expect("Failed to destroy DlssSuperResolution feature");
+                check_ngx_result(NVSDK_NGX_VULKAN_ReleaseFeature(self.feature))
+                    .expect("Failed to destroy DlssSuperResolution feature");
+            },
+            #[cfg(all(windows, feature = "dx12"))]
+            crate::sdk::SdkBackend::Dx12 { .. } => {
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                unsafe {
+                    let _ = check_ngx_result(NVSDK_NGX_D3D12_ReleaseFeature(self.feature));
+                }
+            }
         }
+    }
+}
+
+#[cfg(all(windows, feature = "dx12"))]
+fn texture_to_d3d12(texture_view: &TextureView) -> *mut ID3D12Resource {
+    unsafe {
+        texture_view
+            .texture()
+            .as_hal::<wgpu::hal::api::Dx12>()
+            .unwrap()
+            .raw_resource_ptr()
+            .cast::<ID3D12Resource>()
     }
 }
 

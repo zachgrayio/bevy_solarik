@@ -77,15 +77,24 @@ pub(super) fn init_fsr(
     mut commands: Commands,
     cache: Res<PipelineCache>,
     assets: Res<AssetServer>,
+    adapter: Option<Res<bevy_render::renderer::RenderAdapterInfo>>,
 ) {
-    let library = match solarik_fsr_wgpu::Library::load() {
-        Ok(library) => {
-            tracing::info!("AMD FidelityFX FSR provider available");
-            Some(library)
-        }
-        Err(error) => {
-            tracing::info!(%error, "AMD FidelityFX FSR provider unavailable; native resolution retained");
-            None
+    let is_dx12 = adapter
+        .as_deref()
+        .is_some_and(|info| format!("{:?}", info.backend).contains("Dx12"));
+    let library = if is_dx12 {
+        tracing::info!("Skipping Vulkan FSR loader on DX12 backend");
+        None
+    } else {
+        match solarik_fsr_wgpu::Library::load() {
+            Ok(library) => {
+                tracing::info!("AMD FidelityFX FSR provider available");
+                Some(library)
+            }
+            Err(error) => {
+                tracing::info!(%error, "AMD FidelityFX FSR provider unavailable; native resolution retained");
+                None
+            }
         }
     };
     let layout = BindGroupLayoutDescriptor::new(

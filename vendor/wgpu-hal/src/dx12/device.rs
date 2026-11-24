@@ -470,6 +470,11 @@ impl super::Device {
         &self.present_queue
     }
 
+    /// Raw `ID3D12CommandQueue*` for native interop (FidelityFX / Streamline DX12).
+    pub fn raw_queue_ptr(&self) -> *mut ffi::c_void {
+        windows_core::Interface::as_raw(&self.present_queue)
+    }
+
     pub unsafe fn texture_from_raw(
         resource: Direct3D12::ID3D12Resource,
         format: wgt::TextureFormat,
@@ -1168,6 +1173,7 @@ impl crate::Device for super::Device {
             let mut sampler_index_within_bind_group = 0;
             for entry in bgl.entries.iter() {
                 if let wgt::BindingType::Sampler(_) = entry.ty {
+                    let count = entry.count.map_or(1, NonZeroU32::get);
                     binding_map.insert(
                         naga::ResourceBinding {
                             group: index as u32,
@@ -1182,7 +1188,7 @@ impl crate::Device for super::Device {
                             restrict_indexing: false,
                         },
                     );
-                    sampler_index_within_bind_group += 1;
+                    sampler_index_within_bind_group += count;
                 }
             }
 
@@ -1626,20 +1632,95 @@ impl crate::Device for super::Device {
                                         },
                                     },
                                 };
-                                unsafe {
-                                    self.raw.CreateUnorderedAccessView(
-                                        &data.buffer.resource,
-                                        None,
-                                        Some(&raw_desc),
-                                        handle,
-                                    )
-                                };
+                                    unsafe {
+                                        self.raw.CreateUnorderedAccessView(
+                                            &data.buffer.resource,
+                                            None,
+                                            Some(&raw_desc),
+                                            handle,
+                                        )
+                                    };
+                                }
+                            }
+                            inner.stage.push(handle);
+                        }
+                        // The table range reserves the full `layout.count`, so pad a
+                        // partially-bound buffer array with null descriptors to keep
+                        // later bindings aligned.
+                        if !has_dynamic_offset {
+                            let array_size = layout.count.map_or(1, NonZeroU32::get);
+                            for _ in entry.count..array_size {
+                                let inner = cpu_views.as_mut().unwrap();
+                                let cpu_index = inner.stage.len() as u32;
+                                let handle =
+                                    desc.layout.cpu_heap_views.as_ref().unwrap().at(cpu_index);
+                                match ty {
+                                    wgt::BufferBindingType::Uniform => {
+                                        let raw_desc =
+                                            Direct3D12::D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                                                BufferLocation: 0,
+                                                SizeInBytes: 0,
+                                            };
+                                        unsafe {
+                                            self.raw
+                                                .CreateConstantBufferView(Some(&raw_desc), handle)
+                                        };
+                                    }
+                                    wgt::BufferBindingType::Storage { read_only: true } => {
+                                        let raw_desc = Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC {
+                                            Format: Dxgi::Common::DXGI_FORMAT_R32_TYPELESS,
+                                            Shader4ComponentMapping:
+                                                Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                                            ViewDimension: Direct3D12::D3D12_SRV_DIMENSION_BUFFER,
+                                            Anonymous: Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                                Buffer: Direct3D12::D3D12_BUFFER_SRV {
+                                                    FirstElement: 0,
+                                                    NumElements: 0,
+                                                    StructureByteStride: 0,
+                                                    Flags: Direct3D12::D3D12_BUFFER_SRV_FLAG_RAW,
+                                                },
+                                            },
+                                        };
+                                        unsafe {
+                                            self.raw.CreateShaderResourceView(
+                                                None,
+                                                Some(&raw_desc),
+                                                handle,
+                                            )
+                                        };
+                                    }
+                                    wgt::BufferBindingType::Storage { read_only: false } => {
+                                        let raw_desc =
+                                            Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                                                Format: Dxgi::Common::DXGI_FORMAT_R32_TYPELESS,
+                                                ViewDimension:
+                                                    Direct3D12::D3D12_UAV_DIMENSION_BUFFER,
+                                                Anonymous:
+                                                    Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                                        Buffer: Direct3D12::D3D12_BUFFER_UAV {
+                                                            FirstElement: 0,
+                                                            NumElements: 0,
+                                                            StructureByteStride: 0,
+                                                            CounterOffsetInBytes: 0,
+                                                            Flags: Direct3D12::D3D12_BUFFER_UAV_FLAG_RAW,
+                                                        },
+                                                    },
+                                            };
+                                        unsafe {
+                                            self.raw.CreateUnorderedAccessView(
+                                                None,
+                                                None,
+                                                Some(&raw_desc),
+                                                handle,
+                                            )
+                                        };
+                                    }
+                                }
+                                inner.stage.push(handle);
                             }
                         }
-                        inner.stage.push(handle);
                     }
-                }
-                wgt::BindingType::Texture { .. } => {
+                    wgt::BindingType::Texture { .. } => {
                     let start = entry.resource_index as usize;
                     let end = start + entry.count as usize;
                     for data in &desc.textures[start..end] {
@@ -1708,8 +1789,16 @@ impl crate::Device for super::Device {
                 wgt::BindingType::Sampler { .. } => {
                     let start = entry.resource_index as usize;
                     let end = start + entry.count as usize;
+                    let fallback = desc
+                        .samplers
+                        .get(start)
+                        .map_or(super::sampler::SamplerIndex::ZERO, |s| s.index);
                     for &data in &desc.samplers[start..end] {
                         sampler_indexes.push(data.index);
+                    }
+                    let array_size = layout.count.map_or(1, NonZeroU32::get);
+                    for _ in entry.count..array_size {
+                        sampler_indexes.push(fallback);
                     }
                 }
                 wgt::BindingType::AccelerationStructure { .. } => {

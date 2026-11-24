@@ -38,7 +38,17 @@ use crate::feature_info::with_feature_info;
 use crate::nvsdk_ngx::*;
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
+
+static D3D12_NGX_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Whether [`init_with_d3d12_device`] has already initialized NGX on D3D12 in
+/// this process (so `DlssSdk::new` can obtain capability parameters without
+/// calling `NVSDK_NGX_D3D12_Init_with_ProjectID` or `Shutdown1` twice).
+pub fn is_d3d12_ngx_initialized() -> bool {
+    D3D12_NGX_INITIALIZED.load(Ordering::Acquire)
+}
 
 /// Opaque raw `ID3D12Device*`. NGX receives the COM pointer as `void*`, so it
 /// is carried as `*mut c_void` to avoid a hard dependency on a windows-sys crate.
@@ -491,6 +501,7 @@ impl Drop for D3D12Sdk {
                 self.device.cast::<ID3D12Device>(),
             ));
         }
+        D3D12_NGX_INITIALIZED.store(false, Ordering::Release);
     }
 }
 
@@ -528,6 +539,7 @@ pub fn init_with_d3d12_device(
     unsafe {
         check_ngx_result(NVSDK_NGX_D3D12_GetCapabilityParameters(&mut parameters))?;
     }
+    D3D12_NGX_INITIALIZED.store(true, Ordering::Release);
     Ok(D3D12Sdk { parameters, device })
 }
 

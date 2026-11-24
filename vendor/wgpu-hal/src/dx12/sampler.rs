@@ -19,6 +19,10 @@ use crate::dx12::HResult;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SamplerIndex(u32);
 
+impl SamplerIndex {
+    pub(crate) const ZERO: Self = Self(0);
+}
+
 /// [`D3D12_SAMPLER_DESC`] is not hashable, so we wrap it in a newtype that is.
 ///
 /// We use [`OrderedFloat`] to allow for floating point values to be compared and

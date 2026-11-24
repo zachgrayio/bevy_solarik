@@ -18,22 +18,20 @@ use bevy_render::renderer::RawDx12InitSettings;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
-/// Process-global NGX D3D12 SDK handle. Stored once at device creation and kept
-/// alive for the application's lifetime (NGX is an application-global SDK; there
-/// is no per-frame recreation). The inner `D3D12Sdk` owns the capability
-/// parameters and its `Drop` shuts NGX down — keeping it here means shutdown
-/// happens at process teardown, not mid-frame.
+/// Process-global NGX D3D12 SDK handle + queried SR/RR capabilities. Stored once
+/// at device creation and kept alive for the application's lifetime (NGX is an
+/// application-global SDK; there is no per-frame recreation). The inner
+/// `D3D12Sdk` owns the capability parameters and its `Drop` shuts NGX down —
+/// keeping it here means shutdown happens at process teardown, not mid-frame.
 static NGX_D3D12_SDK: OnceLock<D3D12SdkHolder> = OnceLock::new();
 
 /// `Sync` wrapper: the raw NGX handles inside `D3D12Sdk` live for the whole
 /// device lifetime, are set exactly once before rendering starts, and are only
-/// read by NGX feature creation on the render thread. No mutation after init.
-/// The field is intentionally never read: it is kept alive for its `Drop`.
-#[expect(
-    dead_code,
-    reason = "D3D12Sdk is retained only so NGX is not shut down; only its Drop matters"
-)]
-struct D3D12SdkHolder(dlss_wgpu::dx12::D3D12Sdk);
+/// read by NGX feature creation/evaluation on the render thread.
+struct D3D12SdkHolder {
+    sdk: dlss_wgpu::dx12::D3D12Sdk,
+    support: dlss_wgpu::dx12::Dx12FeatureSupport,
+}
 #[expect(
     unsafe_code,
     reason = "NGX D3D12 SDK is a process-global, init-once handle"
@@ -71,8 +69,22 @@ pub fn install(app: &mut App, project_id: [u8; 16]) {
         settings.add_create_device_callback(move |args| {
             match dlss_wgpu::dx12::init_with_d3d12_device(id, args.device) {
                 Ok(sdk) => {
-                    let _ = NGX_D3D12_SDK.set(D3D12SdkHolder(sdk));
-                    tracing::info!("NGX D3D12 initialized for DLSS / DLSS RR");
+                    let sr = sdk
+                        .feature_supported(dlss_wgpu::dx12::Dx12Feature::SuperResolution)
+                        .unwrap_or(false);
+                    let rr = sdk
+                        .feature_supported(dlss_wgpu::dx12::Dx12Feature::RayReconstruction)
+                        .unwrap_or(false);
+                    let support = dlss_wgpu::dx12::Dx12FeatureSupport {
+                        super_resolution: sr,
+                        ray_reconstruction: rr,
+                    };
+                    let _ = NGX_D3D12_SDK.set(D3D12SdkHolder { sdk, support });
+                    tracing::info!(
+                        dlss_sr = sr,
+                        dlss_rr = rr,
+                        "NGX D3D12 initialized for DLSS / DLSS RR"
+                    );
                 }
                 Err(error) => {
                     tracing::info!(%error, "NGX D3D12 unavailable; DLSS on DX12 disabled");
@@ -85,6 +97,22 @@ pub fn install(app: &mut App, project_id: [u8; 16]) {
 /// Whether NGX D3D12 initialized successfully (queried by the capability probe).
 pub fn ngx_d3d12_ready() -> bool {
     NGX_D3D12_SDK.get().is_some()
+}
+
+/// Probed NGX D3D12 SR/RR feature support from `NVSDK_NGX_Parameter_GetI`.
+/// Returns all-false when NGX D3D12 did not initialize.
+pub fn ngx_d3d12_support() -> dlss_wgpu::dx12::Dx12FeatureSupport {
+    NGX_D3D12_SDK.get().map(|holder| holder.support).unwrap_or(
+        dlss_wgpu::dx12::Dx12FeatureSupport {
+            super_resolution: false,
+            ray_reconstruction: false,
+        },
+    )
+}
+
+/// Access the process-global `D3D12Sdk` once NGX D3D12 has initialized.
+pub fn ngx_d3d12_sdk() -> Option<&'static dlss_wgpu::dx12::D3D12Sdk> {
+    NGX_D3D12_SDK.get().map(|holder| &holder.sdk)
 }
 
 /// A Bevy plugin form, for applications that prefer `add_plugins`.

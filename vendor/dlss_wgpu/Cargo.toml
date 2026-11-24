@@ -16,6 +16,9 @@ uuid = "1"
 bitflags = "2"
 thiserror = "2"
 
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan", "dx12"] }
+
 [build-dependencies]
 cc = "1"
 

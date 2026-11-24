@@ -41,6 +41,8 @@ pub struct RendererCapabilities {
     pub vulkan_nrd: bool,
     /// Vulkan FSR frame generation.
     pub vulkan_fsr_frame_generation: bool,
+    /// Vulkan DLSS-G frame generation (via Streamline).
+    pub vulkan_dlss_frame_generation: bool,
     /// DX12 DLSS Super Resolution (D3D12 NGX).
     pub dx12_dlss_sr: bool,
     /// DX12 DLSS Ray Reconstruction (D3D12 NGX).
@@ -61,6 +63,7 @@ impl RendererCapabilities {
     /// True when any frame-generation provider is available on either backend.
     pub fn frame_generation_supported(self) -> bool {
         self.vulkan_fsr_frame_generation
+            || self.vulkan_dlss_frame_generation
             || self.dx12_fsr_frame_generation
             || self.dx12_dlss_frame_generation
     }
@@ -96,6 +99,10 @@ capability_resource!(
 capability_resource!(
     /// Vulkan FSR frame generation availability.
     VulkanFsrFrameGenerationSupported, vulkan_fsr_frame_generation
+);
+capability_resource!(
+    /// Vulkan DLSS-G frame generation availability.
+    VulkanDlssFrameGenerationSupported, vulkan_dlss_frame_generation
 );
 capability_resource!(
     /// DX12 DLSS Super Resolution availability.
@@ -144,6 +151,9 @@ mod tests {
         caps.vulkan_fsr_frame_generation = true;
         assert!(caps.frame_generation_supported());
         caps.vulkan_fsr_frame_generation = false;
+        caps.vulkan_dlss_frame_generation = true;
+        assert!(caps.frame_generation_supported());
+        caps.vulkan_dlss_frame_generation = false;
         caps.dx12_fsr_frame_generation = true;
         assert!(caps.frame_generation_supported());
         caps.dx12_fsr_frame_generation = false;

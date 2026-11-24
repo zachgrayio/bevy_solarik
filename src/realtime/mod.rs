@@ -167,17 +167,9 @@ impl Plugin for SolarikLightingPlugin {
         load_shader_library!(app, "world_cache_priority.wesl");
         embedded_asset!(app, "world_cache_update.wesl");
         #[cfg(feature = "nrd")]
-        {
-            embedded_asset!(app, "nrd.wesl");
-            app.sub_app_mut(RenderApp)
-                .add_systems(RenderStartup, nrd::init_pipelines);
-        }
+        embedded_asset!(app, "nrd.wesl");
         #[cfg(feature = "fsr")]
-        {
-            embedded_asset!(app, "fsr.wesl");
-            app.sub_app_mut(RenderApp)
-                .add_systems(RenderStartup, fsr::init_fsr);
-        }
+        embedded_asset!(app, "fsr.wesl");
 
         load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
 
@@ -196,6 +188,19 @@ impl Plugin for SolarikLightingPlugin {
             );
             return;
         }
+
+        let is_dx12 = render_app
+            .world()
+            .get_resource::<bevy_render::renderer::RenderAdapterInfo>()
+            .is_some_and(|info| format!("{:?}", info.backend).contains("Dx12"));
+
+        // NRD embeds SPIR-V only; never initialize or queue its pipelines on DX12.
+        #[cfg(feature = "nrd")]
+        if !is_dx12 {
+            render_app.add_systems(RenderStartup, nrd::init_pipelines);
+        }
+        #[cfg(feature = "fsr")]
+        render_app.add_systems(RenderStartup, fsr::init_fsr);
 
         render_app
             .init_resource::<PrimaryGlassViews>()
