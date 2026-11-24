@@ -95,11 +95,6 @@ struct CoreExports {
     sl_set_vulkan_info: FnSlSetVulkanInfo,
     #[cfg(windows)]
     sl_upgrade_interface: FnSlUpgradeInterface,
-    vk_create_swapchain: Option<ash::vk::PFN_vkCreateSwapchainKHR>,
-    vk_destroy_swapchain: Option<ash::vk::PFN_vkDestroySwapchainKHR>,
-    vk_get_swapchain_images: Option<ash::vk::PFN_vkGetSwapchainImagesKHR>,
-    vk_acquire_next_image: Option<ash::vk::PFN_vkAcquireNextImageKHR>,
-    vk_queue_present: Option<ash::vk::PFN_vkQueuePresentKHR>,
 }
 
 struct FeatureExports {
@@ -227,36 +222,6 @@ fn load_core() -> Result<(CoreExports, PathBuf), Error> {
             sl_set_vulkan_info: load_sym!(library, "slSetVulkanInfo\0", FnSlSetVulkanInfo),
             #[cfg(windows)]
             sl_upgrade_interface: load_sym!(library, "slUpgradeInterface\0", FnSlUpgradeInterface),
-            vk_create_swapchain: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkCreateSwapchainKHR>(b"vkCreateSwapchainKHR\0")
-                    .ok()
-                    .map(|s| *s)
-            },
-            vk_destroy_swapchain: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkDestroySwapchainKHR>(b"vkDestroySwapchainKHR\0")
-                    .ok()
-                    .map(|s| *s)
-            },
-            vk_get_swapchain_images: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkGetSwapchainImagesKHR>(b"vkGetSwapchainImagesKHR\0")
-                    .ok()
-                    .map(|s| *s)
-            },
-            vk_acquire_next_image: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkAcquireNextImageKHR>(b"vkAcquireNextImageKHR\0")
-                    .ok()
-                    .map(|s| *s)
-            },
-            vk_queue_present: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkQueuePresentKHR>(b"vkQueuePresentKHR\0")
-                    .ok()
-                    .map(|s| *s)
-            },
             _library: library,
         };
         tracing::info!(
@@ -412,10 +377,21 @@ pub fn attach_device(
         }
     }
 
+    // On Vulkan, wgpu-hal creates VkInstance/VkDevice directly rather than
+    // through sl.interposer.dll's Vulkan loader proxy, so Vulkan swapchain
+    // interception is intentionally disabled. Only report DLSS-G / MFG as
+    // supported on DX12 where `slUpgradeInterface` upgrades `IDXGISwapChain3`.
+    let dlss_g_supported =
+        is_dx12 && dlss_g_res == SL_RESULT_OK && features.dlss_g_set_options.is_some();
+    let effective_max_gen = if dlss_g_supported {
+        max_generated_frames
+    } else {
+        0
+    };
     let capabilities = FrameGenCapabilities {
-        dlss_g_supported: dlss_g_res == SL_RESULT_OK && features.dlss_g_set_options.is_some(),
-        max_generated_frames,
-        mfg_supported: max_generated_frames >= 2,
+        dlss_g_supported,
+        max_generated_frames: effective_max_gen,
+        mfg_supported: effective_max_gen >= 2,
         reflex_supported: reflex_res == SL_RESULT_OK && features.reflex_set_options.is_some(),
     };
 

@@ -121,8 +121,13 @@ impl Plugin for FrameGenerationPlugin {
 
         #[cfg(feature = "fsr_frame_generation")]
         {
+            // AMD FidelityFX Frame Generation requires FFX swapchain
+            // presentation (`FrameGenerationSwapChain` DX12/VK) to present
+            // interpolated frames; keep `fsr_fg_supported = false` until that
+            // swapchain hook is wired so we never advertise fake FG or dispatch
+            // into dummy output handles.
             let library = solarik_fsr_wgpu::Library::load_for_device(&wgpu_device).ok();
-            caps.fsr_fg_supported = library.is_some();
+            caps.fsr_fg_supported = false;
             app.sub_app_mut(RenderApp).insert_resource(FsrFgRuntime {
                 library,
                 context: Mutex::new(None),

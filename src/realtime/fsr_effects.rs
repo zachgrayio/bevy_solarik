@@ -113,23 +113,12 @@ pub(super) fn dispatch_dx12_effects(
                 }
             }
         }
-        if let Some((_, rc_ctx)) = guard.as_mut() {
-            let empty = solarik_fsr_wgpu::effects::Resource::default();
-            let mut desc = solarik_fsr_wgpu::effects::DispatchDescRadianceCache {
-                header: solarik_fsr_wgpu::effect::FfxApiHeader {
-                    kind: solarik_fsr_wgpu::effects::desc_types::RADIANCECACHE_DISPATCH,
-                    next: std::ptr::null_mut(),
-                },
-                command_list: std::ptr::null_mut(),
-                prediction_inputs: empty,
-                prediction_outputs: empty,
-                train_inputs: empty,
-                train_targets: empty,
-                sample_counters: empty,
-                flags: 0,
-                overrides: solarik_fsr_wgpu::effects::RadianceCacheOverrides::default(),
-            };
-            let _ = rc_ctx.dispatch_wgpu(encoder, &mut desc);
+        if guard.is_some() && !effects.warned_rc.swap(true, Ordering::Relaxed) {
+            // Do not issue `ffxDispatch` with null `Resource::default()` handles;
+            // real prediction/training/counter buffers must be bound before dispatch.
+            tracing::info!(
+                "FSR Radiance Cache context ready; skipping dispatch until training/prediction buffers are bound"
+            );
         }
     }
 
@@ -165,54 +154,20 @@ pub(super) fn dispatch_dx12_effects(
                 }
             }
         }
-        if let Some((_, rr_ctx)) = guard.as_mut()
-            && let (Ok(color_res), Ok(depth_res), Ok(mv_res)) = (
-                solarik_fsr_wgpu::effect::resource_for_wgpu(
-                    color_view,
-                    solarik_fsr_wgpu::states::UNORDERED_ACCESS,
-                ),
-                solarik_fsr_wgpu::effect::resource_for_wgpu(
-                    depth_view,
-                    solarik_fsr_wgpu::states::COMPUTE_READ,
-                ),
-                solarik_fsr_wgpu::effect::resource_for_wgpu(
-                    motion_view,
-                    solarik_fsr_wgpu::states::COMPUTE_READ,
-                ),
-            )
-        {
-            let mut desc = solarik_fsr_wgpu::effects::DispatchDescDenoiser {
-                header: solarik_fsr_wgpu::effect::FfxApiHeader {
-                    kind: solarik_fsr_wgpu::effects::desc_types::DENOISER_DISPATCH,
-                    next: std::ptr::null_mut(),
-                },
-                command_list: std::ptr::null_mut(),
-                linear_depth: depth_res,
-                motion_vectors: mv_res,
-                normals: color_res,
-                specular_albedo: color_res,
-                diffuse_albedo: color_res,
-                motion_vector_scale: solarik_fsr_wgpu::effects::FloatCoords3D {
-                    x: -(size.x as f32),
-                    y: -(size.y as f32),
-                    z: 0.0,
-                },
-                jitter_offsets: solarik_fsr_wgpu::effects::FloatCoords2D::default(),
-                camera_position_delta: solarik_fsr_wgpu::effects::FloatCoords3D::default(),
-                view: solarik_fsr_wgpu::effects::Matrix4x4::default(),
-                projection: solarik_fsr_wgpu::effects::Matrix4x4::default(),
-                linear_depth_bounds: solarik_fsr_wgpu::effects::FloatBounds {
-                    min: 0.0,
-                    max: 1000.0,
-                },
-                render_size: solarik_fsr_wgpu::effects::Dimensions2D {
-                    width: size.x,
-                    height: size.y,
-                },
-                frame_index,
-                flags: u32::from(reset),
-            };
-            let _ = rr_ctx.dispatch_wgpu(encoder, &mut desc);
+        if guard.is_some() && !effects.warned_rr.swap(true, Ordering::Relaxed) {
+            // Do not dispatch `DispatchDescDenoiser` with stand-in color views for
+            // octahedral normals/albedo or unchained signal descriptors.
+            tracing::info!(
+                "FSR Ray Regeneration context ready; skipping dispatch until G-buffer guides and per-signal descriptors are bound"
+            );
         }
+        let _ = (
+            frame_index,
+            reset,
+            encoder,
+            color_view,
+            depth_view,
+            motion_view,
+        );
     }
 }
