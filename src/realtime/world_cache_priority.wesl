@@ -1,4 +1,4 @@
-import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_CELL_UPDATES_SOFT_CAP;
+import bevy_solarik::realtime::world_cache_query::world_cache_cell_updates_soft_cap;
 import bevy_solarik::realtime::realtime_bindings::constants;
 import bevy_solarik::realtime::realtime_bindings::world_cache_a;
 import bevy_solarik::realtime::realtime_bindings::world_cache_b;
@@ -118,7 +118,7 @@ fn histogram_world_cache_priority(
 
 @compute @workgroup_size(1)
 fn budget_world_cache_priority() {
-    let budget = min(WORLD_CACHE_CELL_UPDATES_SOFT_CAP, world_cache_active_cells_count);
+    let budget = min(world_cache_cell_updates_soft_cap(), world_cache_active_cells_count);
     let unlit = atomicLoad(&world_cache_b[0u]);
     let refresh_reserve = min(world_cache_active_cells_count - unlit,
         budget / PRIORITY_REFRESH_RESERVE_DIVISOR);
@@ -171,7 +171,7 @@ fn select_world_cache_priority(
     let valid = id.x < world_cache_active_cells_count;
     if valid {
         // Rotate ties without changing age priority or depending on RNG state.
-        let rotation = (constants.render_frame * WORLD_CACHE_CELL_UPDATES_SOFT_CAP)
+        let rotation = (constants.render_frame * world_cache_cell_updates_soft_cap())
             % max(world_cache_active_cells_count, 1u);
         cell = world_cache_active_cell_indices[(id.x + rotation) % world_cache_active_cells_count];
         bucket = world_cache_priority_bucket(cell);

@@ -1,5 +1,5 @@
 use super::{
-    SolarikLighting,
+    SolariQuality, SolarikLighting,
     prepare::{LIGHT_TILE_BLOCKS, SolarikLightingResources, WORLD_CACHE_SIZE},
     view_pipelines::{DeferredPipeline, ViewLightingMode, ViewPipelineSet, ViewPipelineVariants},
 };
@@ -25,7 +25,7 @@ use bevy_render::{
             storage_buffer_sized, texture_2d, texture_depth_2d, texture_storage_2d, uniform_buffer,
         },
     },
-    renderer::{RenderAdapter, RenderContext, RenderDevice, ViewQuery},
+    renderer::{RenderAdapter, RenderContext, RenderDevice, RenderQueue, ViewQuery},
     view::{ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
 };
 use bevy_render::{
@@ -34,6 +34,12 @@ use bevy_render::{
 };
 use bevy_shader::{Shader, ShaderDefVal};
 use bevy_utils::default;
+
+/// Regional invalidation is opt-in for scenes with moving ray-traced geometry.
+/// BARD's measured scenes gained no reuse or frame time from it.
+fn regional_history_enabled() -> bool {
+    std::env::var("SOLARIK_REGIONAL_HISTORY").is_ok_and(|value| value == "1")
+}
 
 /// Resource holding the Solarik lighting pipeline configuration.
 #[derive(Resource)]
@@ -208,7 +214,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     previous_view_uniforms: Res<PreviousViewUniforms>,
     frame_count: Res<FrameCount>,
     render_device: Res<RenderDevice>,
-    #[cfg(feature = "nrd")] render_queue: Res<bevy_render::renderer::RenderQueue>,
+    render_queue: Res<RenderQueue>,
     #[cfg(feature = "nrd")] nrd_pipelines: Res<super::nrd::NrdPipelines>,
     #[cfg(feature = "graphics_debug")] query_capture: Option<
         Res<super::query_capture::PrimaryQueryCapture>,
@@ -353,7 +359,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     let nrd_target = view_target_attachment.view;
 
     let s = solarik_lighting_resources;
-    let lighting_entries = BindGroupEntries::sequential((
+    let mut lighting_entries = BindGroupEntries::sequential((
         view_target_attachment.view,
         s.light_tile_samples.as_entire_binding(),
         s.light_tile_resolved_samples.as_entire_binding(),
@@ -381,6 +387,10 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         s.sky_distribution.as_entire_binding(),
     ))
     .to_vec();
+    lighting_entries.extend_from_slice(&BindGroupEntries::with_indices(((
+        27,
+        s.quality_buffer.as_entire_binding(),
+    ),)));
     #[cfg(feature = "nrd")]
     let lighting_entries = {
         let mut entries = lighting_entries;
@@ -394,6 +404,11 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         "solarik_lighting_bind_group",
         &pipeline_cache.get_bind_group_layout(&pipelines.bind_group_layout),
         &lighting_entries,
+    );
+    render_queue.write_buffer(
+        &s.quality_buffer,
+        0,
+        bytemuck::bytes_of(&solarik_lighting.quality),
     );
     let bind_group_world_cache_active_cells_dispatch = render_device.create_bind_group(
         "solarik_lighting_bind_group_world_cache_active_cells_dispatch",
@@ -425,7 +440,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         scene_bindings.history_generation,
         scene_bindings.history_stable_radius,
     );
-    let regional = std::env::var("SOLARIK_REGIONAL_HISTORY").is_ok_and(|v| v == "1")
+    let regional = regional_history_enabled()
         && scene_bindings.history_regional
         && s.history
             .has_one_pending_event(scene_bindings.history_generation);
@@ -553,79 +568,83 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     pass.dispatch_workgroups(LIGHT_TILE_BLOCKS as u32, 1, 1);
     d.end(&mut pass);
 
-    let d = diagnostics.time_span(&mut pass, "solarik_lighting/world_cache");
+    let direct_only = solarik_lighting.quality.is_direct_only();
 
-    pass.set_bind_group(2, &bind_group_world_cache_active_cells_dispatch, &[]);
+    if !direct_only {
+        let d = diagnostics.time_span(&mut pass, "solarik_lighting/world_cache");
 
-    pass.set_pipeline(decay_world_cache_pipeline);
-    pass.set_immediates(
-        0,
-        bytemuck::cast_slice(&[
-            frame_index,
-            reset_flags,
-            render_frame,
-            stable_radius.to_bits(),
-        ]),
-    );
-    pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
+        pass.set_bind_group(2, &bind_group_world_cache_active_cells_dispatch, &[]);
 
-    pass.set_pipeline(compact_world_cache_single_block_pipeline);
-    pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
+        pass.set_pipeline(decay_world_cache_pipeline);
+        pass.set_immediates(
+            0,
+            bytemuck::cast_slice(&[
+                frame_index,
+                reset_flags,
+                render_frame,
+                stable_radius.to_bits(),
+            ]),
+        );
+        pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
 
-    pass.set_pipeline(compact_world_cache_blocks_pipeline);
-    pass.dispatch_workgroups(1, 1, 1);
+        pass.set_pipeline(compact_world_cache_single_block_pipeline);
+        pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
 
-    pass.set_pipeline(compact_world_cache_write_active_cells_pipeline);
-    pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
+        pass.set_pipeline(compact_world_cache_blocks_pipeline);
+        pass.dispatch_workgroups(1, 1, 1);
 
-    pass.set_pipeline(clear_world_cache_priority_pipeline);
-    pass.dispatch_workgroups(1, 1, 1);
-    pass.set_pipeline(histogram_world_cache_priority_pipeline);
-    pass.dispatch_workgroups((WORLD_CACHE_SIZE / 256) as u32, 1, 1);
-    pass.set_pipeline(budget_world_cache_priority_pipeline);
-    pass.dispatch_workgroups(1, 1, 1);
-    pass.set_pipeline(select_world_cache_priority_pipeline);
-    pass.dispatch_workgroups((WORLD_CACHE_SIZE / 256) as u32, 1, 1);
+        pass.set_pipeline(compact_world_cache_write_active_cells_pipeline);
+        pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
 
-    pass.set_bind_group(2, None, &[]);
+        pass.set_pipeline(clear_world_cache_priority_pipeline);
+        pass.dispatch_workgroups(1, 1, 1);
+        pass.set_pipeline(histogram_world_cache_priority_pipeline);
+        pass.dispatch_workgroups((WORLD_CACHE_SIZE / 256) as u32, 1, 1);
+        pass.set_pipeline(budget_world_cache_priority_pipeline);
+        pass.dispatch_workgroups(1, 1, 1);
+        pass.set_pipeline(select_world_cache_priority_pipeline);
+        pass.dispatch_workgroups((WORLD_CACHE_SIZE / 256) as u32, 1, 1);
 
-    pass.set_pipeline(sample_di_for_world_cache_pipeline);
-    pass.set_immediates(
-        0,
-        bytemuck::cast_slice(&[
-            frame_index,
-            reset_flags,
-            render_frame,
-            stable_radius.to_bits(),
-        ]),
-    );
-    pass.dispatch_workgroups_indirect(
-        &solarik_lighting_resources.world_cache_active_cells_dispatch,
-        0,
-    );
+        pass.set_bind_group(2, None, &[]);
 
-    pass.set_pipeline(sample_gi_for_world_cache_pipeline);
-    pass.set_immediates(
-        0,
-        bytemuck::cast_slice(&[
-            frame_index,
-            reset_flags,
-            render_frame,
-            stable_radius.to_bits(),
-        ]),
-    );
-    pass.dispatch_workgroups_indirect(
-        &solarik_lighting_resources.world_cache_active_cells_dispatch,
-        0,
-    );
+        pass.set_pipeline(sample_di_for_world_cache_pipeline);
+        pass.set_immediates(
+            0,
+            bytemuck::cast_slice(&[
+                frame_index,
+                reset_flags,
+                render_frame,
+                stable_radius.to_bits(),
+            ]),
+        );
+        pass.dispatch_workgroups_indirect(
+            &solarik_lighting_resources.world_cache_active_cells_dispatch,
+            0,
+        );
 
-    pass.set_pipeline(blend_new_world_cache_samples_pipeline);
-    pass.dispatch_workgroups_indirect(
-        &solarik_lighting_resources.world_cache_active_cells_dispatch,
-        0,
-    );
+        pass.set_pipeline(sample_gi_for_world_cache_pipeline);
+        pass.set_immediates(
+            0,
+            bytemuck::cast_slice(&[
+                frame_index,
+                reset_flags,
+                render_frame,
+                stable_radius.to_bits(),
+            ]),
+        );
+        pass.dispatch_workgroups_indirect(
+            &solarik_lighting_resources.world_cache_active_cells_dispatch,
+            0,
+        );
 
-    d.end(&mut pass);
+        pass.set_pipeline(blend_new_world_cache_samples_pipeline);
+        pass.dispatch_workgroups_indirect(
+            &solarik_lighting_resources.world_cache_active_cells_dispatch,
+            0,
+        );
+
+        d.end(&mut pass);
+    }
 
     let d = diagnostics.time_span(&mut pass, "solarik_lighting/direct_lighting");
 
@@ -655,51 +674,55 @@ pub fn solarik_lighting<const PRIMARY: bool>(
 
     d.end(&mut pass);
 
-    let d = diagnostics.time_span(&mut pass, "solarik_lighting/diffuse_indirect_lighting");
+    if !direct_only {
+        let d = diagnostics.time_span(&mut pass, "solarik_lighting/diffuse_indirect_lighting");
 
-    pass.set_pipeline(gi_initial_and_temporal_pipeline);
-    pass.set_immediates(
-        0,
-        bytemuck::cast_slice(&[
-            frame_index,
-            reset_flags,
-            render_frame,
-            stable_radius.to_bits(),
-        ]),
-    );
-    pass.dispatch_workgroups(dx, dy, 1);
+        pass.set_pipeline(gi_initial_and_temporal_pipeline);
+        pass.set_immediates(
+            0,
+            bytemuck::cast_slice(&[
+                frame_index,
+                reset_flags,
+                render_frame,
+                stable_radius.to_bits(),
+            ]),
+        );
+        pass.dispatch_workgroups(dx, dy, 1);
 
-    pass.set_pipeline(gi_spatial_and_shade_pipeline);
-    pass.set_immediates(
-        0,
-        bytemuck::cast_slice(&[
-            frame_index,
-            reset_flags,
-            render_frame,
-            stable_radius.to_bits(),
-        ]),
-    );
-    pass.dispatch_workgroups(dx, dy, 1);
+        pass.set_pipeline(gi_spatial_and_shade_pipeline);
+        pass.set_immediates(
+            0,
+            bytemuck::cast_slice(&[
+                frame_index,
+                reset_flags,
+                render_frame,
+                stable_radius.to_bits(),
+            ]),
+        );
+        pass.dispatch_workgroups(dx, dy, 1);
 
-    d.end(&mut pass);
-
-    let d = diagnostics.time_span(&mut pass, "solarik_lighting/specular_indirect_lighting");
-    #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-    if let Some(bind_group_resolve_dlss_rr_textures) = &bind_group_resolve_dlss_rr_textures {
-        pass.set_bind_group(2, bind_group_resolve_dlss_rr_textures, &[]);
+        d.end(&mut pass);
     }
-    pass.set_pipeline(specular_gi_pipeline);
-    pass.set_immediates(
-        0,
-        bytemuck::cast_slice(&[
-            frame_index,
-            reset_flags,
-            render_frame,
-            stable_radius.to_bits(),
-        ]),
-    );
-    pass.dispatch_workgroups(dx, dy, 1);
-    d.end(&mut pass);
+
+    if !direct_only {
+        let d = diagnostics.time_span(&mut pass, "solarik_lighting/specular_indirect_lighting");
+        #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+        if let Some(bind_group_resolve_dlss_rr_textures) = &bind_group_resolve_dlss_rr_textures {
+            pass.set_bind_group(2, bind_group_resolve_dlss_rr_textures, &[]);
+        }
+        pass.set_pipeline(specular_gi_pipeline);
+        pass.set_immediates(
+            0,
+            bytemuck::cast_slice(&[
+                frame_index,
+                reset_flags,
+                render_frame,
+                stable_radius.to_bits(),
+            ]),
+        );
+        pass.dispatch_workgroups(dx, dy, 1);
+        d.end(&mut pass);
+    }
 
     drop(pass);
     #[cfg(feature = "nrd")]
@@ -807,6 +830,11 @@ pub fn init_solari_lighting_pipelines(
         ),
     )
     .to_vec();
+    let mut lighting_layout_entries = lighting_layout_entries;
+    lighting_layout_entries.extend_from_slice(&BindGroupLayoutEntries::with_indices(
+        ShaderStages::COMPUTE,
+        ((27, uniform_buffer::<SolariQuality>(false)),),
+    ));
     #[cfg(feature = "nrd")]
     let lighting_layout_entries = {
         let mut entries = lighting_layout_entries;
@@ -886,7 +914,7 @@ pub fn init_solari_lighting_pipelines(
         if std::env::var("SOLARIK_ADAPTIVE_CACHE_BUDGET").is_ok_and(|v| v == "1") {
             shader_defs.push("ADAPTIVE_CACHE_BUDGET".into());
         }
-        if std::env::var("SOLARIK_REGIONAL_HISTORY").is_ok_and(|v| v == "1") {
+        if regional_history_enabled() {
             shader_defs.push("REGIONAL_HISTORY".into());
         }
         if std::env::var("SOLARIK_RAY_MATERIAL_FILTERING").is_ok_and(|v| v == "1") {

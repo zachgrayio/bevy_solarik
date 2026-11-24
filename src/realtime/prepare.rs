@@ -72,6 +72,8 @@ pub struct SolarikLightingResources {
     pub world_cache_active_cell_indices: Buffer,
     pub world_cache_active_cells_count: Buffer,
     pub world_cache_active_cells_dispatch: Buffer,
+    /// Runtime GI/cache budgets written once per frame from `SolarikLighting::quality`.
+    pub quality_buffer: Buffer,
     pub view_size: UVec2,
     pub(crate) history: crate::scene::history::ViewHistory,
 }
@@ -261,6 +263,13 @@ pub fn prepare_solari_lighting_resources(
             mapped_at_creation: false,
         });
 
+        let quality_buffer = render_device.create_buffer(&BufferDescriptor {
+            label: Some("solarik_lighting_quality"),
+            size: size_of::<super::SolariQuality>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         commands.entity(entity).insert(SolarikLightingResources {
             #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
             has_dlss_rr,
@@ -284,6 +293,7 @@ pub fn prepare_solari_lighting_resources(
             world_cache_active_cell_indices,
             world_cache_active_cells_count,
             world_cache_active_cells_dispatch,
+            quality_buffer,
             view_size,
             history: Default::default(),
         });

@@ -206,10 +206,14 @@ impl RenderResources {
         }
 
         render_world.insert_resource(instance);
-        render_world.insert_resource(PipelineCache::new(
-            device.clone(),
-            synchronous_pipeline_compilation,
-        ));
+        let mut pipeline_cache =
+            PipelineCache::new(device.clone(), synchronous_pipeline_compilation);
+        if let Some(storage) =
+            main_world.get_resource::<crate::render_resource::PipelineCacheStorage>()
+        {
+            pipeline_cache.enable_persistence(&adapter_info, storage);
+        }
+        render_world.insert_resource(pipeline_cache);
         render_world.insert_resource(DeviceErrorHandler::new(&device));
         render_world.insert_resource(device);
         render_world.insert_resource(queue);

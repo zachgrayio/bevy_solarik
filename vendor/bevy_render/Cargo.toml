@@ -151,6 +151,12 @@ version = "0.20.0"
 [dependencies.bevy_tasks]
 version = "0.20.0"
 
+[dependencies.blake3]
+version = "1"
+
+[dev-dependencies.tempfile]
+version = "3"
+
 [dependencies.bevy_time]
 version = "0.20.0"
 

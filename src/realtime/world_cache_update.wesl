@@ -22,9 +22,9 @@ import bevy_solarik::scene::raytracing_scene_bindings::ray_max_distance;
 import bevy_solarik::realtime::world_cache_priority::selected_world_cache_cell_count;
 import bevy_solarik::realtime::world_cache_priority::PRIORITY_UPDATED_COUNT;
 import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_MAX_TEMPORAL_SAMPLES;
-import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_DIRECT_LIGHT_SAMPLE_COUNT;
+import bevy_solarik::realtime::world_cache_query::world_cache_direct_light_sample_count;
 import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_MAX_GI_RAY_DISTANCE;
-import bevy_solarik::realtime::world_cache_query::WORLD_CACHE_CELL_UPDATES_SOFT_CAP;
+import bevy_solarik::realtime::world_cache_query::world_cache_cell_updates_soft_cap;
 import bevy_solarik::realtime::world_cache_query::query_two_sided_world_cache_with_support;
 import bevy_solarik::realtime::realtime_bindings::light_tile_resolved_samples;
 import bevy_solarik::realtime::realtime_bindings::view;
@@ -111,7 +111,7 @@ fn blend_new_samples(@builtin(global_invocation_id) active_cell_id: vec3<u32>) {
 
     // https://bsky.app/profile/gboisse.bsky.social/post/3m5blga3ftk2a
     let sample_count = min(old_radiance.a + 1.0, WORLD_CACHE_MAX_TEMPORAL_SAMPLES);
-    let update_probability = min(1.0, f32(WORLD_CACHE_CELL_UPDATES_SOFT_CAP) / f32(world_cache_active_cells_count));
+    let update_probability = min(1.0, f32(world_cache_cell_updates_soft_cap()) / f32(world_cache_active_cells_count));
     var blend_amount = cache_blend_amount(sample_count, luminance(old_radiance.rgb), luminance_delta, update_probability);
     if (constants.reset & 1u) != 0u {
         blend_amount = 1.0;
@@ -151,8 +151,8 @@ fn sample_random_light_ris(world_position: vec3<f32>, world_normal: vec3<f32>, w
     var selected_sample_radiance = vec3(0.0);
     var selected_sample_target_function = 0.0;
     var selected_sample_world_position = vec4(0.0);
-    let mis_weight = 1.0 / f32(WORLD_CACHE_DIRECT_LIGHT_SAMPLE_COUNT);
-    for (var i = 0u; i < WORLD_CACHE_DIRECT_LIGHT_SAMPLE_COUNT; i++) {
+    let mis_weight = 1.0 / f32(world_cache_direct_light_sample_count());
+    for (var i = 0u; i < world_cache_direct_light_sample_count(); i++) {
         let tile_sample = light_tile_start + rand_range_u(1024u, rng);
         let resolved_light_sample = unpack_resolved_light_sample(light_tile_resolved_samples[tile_sample], view.exposure);
         let light_contribution = calculate_resolved_light_contribution(resolved_light_sample, world_position, world_normal);

@@ -11,6 +11,7 @@ import bevy_solarik::realtime::realtime_bindings::world_cache_b;
 import bevy_solarik::realtime::realtime_bindings::world_cache_active_cell_indices;
 import bevy_solarik::realtime::realtime_bindings::world_cache_active_cells_count;
 import bevy_solarik::realtime::realtime_bindings::WorldCacheGeometryData;
+import bevy_solarik::realtime::realtime_bindings::quality;
 
 enable wgpu_ray_query;
 
@@ -18,12 +19,16 @@ enable wgpu_ray_query;
 
 /// How responsive the world cache is to changes in lighting (higher is less responsive but more stable, lower is more responsive but less stable)
 const WORLD_CACHE_MAX_TEMPORAL_SAMPLES: f32 = 32.0;
-/// How many direct light samples each cell takes when updating each frame
-const WORLD_CACHE_DIRECT_LIGHT_SAMPLE_COUNT: u32 = 32u;
 /// Maximum amount of distance to trace GI rays between two cache cells
 const WORLD_CACHE_MAX_GI_RAY_DISTANCE: f32 = 50.0;
-/// Soft upper limit on the amount of cache cells to update each frame
-const WORLD_CACHE_CELL_UPDATES_SOFT_CAP: u32 = 40000u;
+
+fn world_cache_direct_light_sample_count() -> u32 {
+    return max(1u, quality.cache_samples);
+}
+
+fn world_cache_cell_updates_soft_cap() -> u32 {
+    return max(1u, quality.cache_cell_updates);
+}
 
 /// Maximum amount of frames a cell can live for without being queried
 const WORLD_CACHE_CELL_LIFETIME: u32 = 10u;

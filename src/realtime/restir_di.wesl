@@ -40,6 +40,7 @@ import bevy_solarik::realtime::realtime_bindings::previous_depth_buffer;
 import bevy_solarik::realtime::realtime_bindings::view;
 import bevy_solarik::realtime::realtime_bindings::previous_view;
 import bevy_solarik::realtime::realtime_bindings::constants as lighting_constants;
+import bevy_solarik::realtime::realtime_bindings::quality;
 import bevy_solarik::realtime::realtime_bindings::ResolvedLightSamplePacked;
 @if(NRD_SIGNALS) import bevy_solarik::realtime::realtime_bindings::nrd_diffuse;
 @if(NRD_SIGNALS) import bevy_solarik::realtime::realtime_bindings::nrd_specular;
@@ -229,7 +230,7 @@ fn load_temporal_reservoir_inner(temporal_pixel_id: vec2<u32>, depth: f32, world
 }
 
 fn load_spatial_reservoir(pixel_id: vec2<u32>, depth: f32, world_position: vec3<f32>, world_normal: vec3<f32>, rng: ptr<function, u32>) -> NeighborInfo {
-    for (var i = 0u; i < 5u; i++) {
+    for (var i = 0u; i < max(1u, quality.spatial_taps); i++) {
         let spatial_pixel_id = get_neighbor_pixel_id(pixel_id, SPATIAL_REUSE_RADIUS_PIXELS, rng);
 
         let spatial_depth = textureLoad(depth_buffer, spatial_pixel_id, 0);
