@@ -39,6 +39,13 @@ fn bundled(out: &Path, target: &str, os: &str) {
     );
     let lib = root.join(target).join("dlss");
     let windows = os == "windows";
+    // The NGX archive's D3D12 objects call Win32 registry APIs (RegOpenKeyExW,
+    // RegQueryValueExW, RegCloseKey). Declare the system lib that provides them
+    // so consumers linking NGX D3D12 resolve cleanly on Windows. It is part of
+    // the OS and is a no-op on other platforms; no extra artifact to vendor.
+    if windows {
+        println!("cargo:rustc-link-lib=advapi32");
+    }
     let static_crt = env::var("CARGO_CFG_TARGET_FEATURE")
         .unwrap_or_default()
         .split(',')
@@ -123,6 +130,8 @@ fn main() {
     }
     println!("cargo:rustc-link-search=native={lib_dir}");
     if target_os == "windows" {
+        // NGX D3D12 registry helpers need advapi32 (see bundled()).
+        println!("cargo:rustc-link-lib=advapi32");
         #[cfg(not(target_feature = "crt-static"))]
         println!("cargo:rustc-link-lib=static=nvsdk_ngx_d");
         #[cfg(target_feature = "crt-static")]

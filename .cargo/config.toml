@@ -1,0 +1,8 @@
+# Standalone builds of this repository (tests, examples) resolve the
+# workspace-relative native artifact directory. Consuming applications can set
+# the same variable to their own pinned directory; the FSR build scripts also
+# accept FSR_RUNTIME_DIR and FSR_DLL for an exact provider location.
+# FSR modules are optional: solarik-fsr-wgpu dlopens the provider, so a plain
+# `cargo test` needs no DLL and no account.
+[env]
+FSR_NATIVE_LIBS = { value = "native", relative = true }

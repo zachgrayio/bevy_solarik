@@ -265,6 +265,7 @@ impl RenderCreation {
         primary_window: Option<RawHandleWrapperHolder>,
         #[cfg(feature = "raw_vulkan_init")]
         raw_vulkan_init_settings: renderer::raw_vulkan_init::RawVulkanInitSettings,
+        #[cfg(windows)] raw_dx12_init_settings: renderer::RawDx12InitSettings,
     ) -> bool {
         match self {
             RenderCreation::Manual(resources) => {
@@ -283,6 +284,8 @@ impl RenderCreation {
                         &settings,
                         #[cfg(feature = "raw_vulkan_init")]
                         raw_vulkan_init_settings,
+                        #[cfg(windows)]
+                        raw_dx12_init_settings,
                     )
                     .await;
 

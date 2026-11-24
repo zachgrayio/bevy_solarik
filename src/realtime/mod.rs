@@ -1,4 +1,7 @@
+mod effects_chain;
 mod extract;
+#[cfg(feature = "fsr")]
+mod fsr;
 #[cfg(feature = "graphics_debug")]
 pub mod graphics_debug;
 mod node;
@@ -8,6 +11,12 @@ mod prepare;
 #[cfg(feature = "graphics_debug")]
 pub mod query_capture;
 mod view_pipelines;
+
+pub use effects_chain::{
+    ChainError, DescriptorChain, DescriptorNode, EffectChainPlan, EffectStep, FfxBackend,
+    FsrEffectChainConfig, SkippedEffect, denoiser_signal_chain, desc_types,
+    fg_swapchain_descriptors_exist, resolve_and_validate, resolve_effect_chain, validate_chain,
+};
 
 use crate::SolarikPlugins;
 use bevy_app::{App, Plugin};
@@ -89,6 +98,56 @@ impl SolariQuality {
     }
 }
 
+/// AMD FidelityFX FSR quality preset, the engine-facing equivalent of
+/// `bevy_anti_alias::dlss::DlssPerfQualityMode`. It drives the camera's render
+/// resolution, `TemporalJitter` and `MipBias`; see `docs/fsr.md`.
+#[cfg(feature = "fsr")]
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FsrQualityMode {
+    /// Temporal anti-aliasing at native resolution.
+    NativeAA,
+    /// 1.5x per dimension.
+    Quality,
+    /// 1.7x per dimension.
+    Balanced,
+    /// 2.0x per dimension.
+    #[default]
+    Performance,
+    /// 3.0x per dimension.
+    UltraPerformance,
+}
+
+#[cfg(feature = "fsr")]
+impl FsrQualityMode {
+    /// Map to the bindings crate's `FfxApi` enum value.
+    pub(crate) fn native(self) -> solarik_fsr_wgpu::QualityMode {
+        use solarik_fsr_wgpu::QualityMode as Q;
+        match self {
+            Self::NativeAA => Q::NativeAA,
+            Self::Quality => Q::Quality,
+            Self::Balanced => Q::Balanced,
+            Self::Performance => Q::Performance,
+            Self::UltraPerformance => Q::UltraPerformance,
+        }
+    }
+
+    /// Render resolution for a display size, for `MainPassResolutionOverride`.
+    pub fn render_resolution(self, display: [u32; 2]) -> [u32; 2] {
+        self.native().render_resolution(display)
+    }
+
+    /// Subpixel jitter for this frame, in `[-0.5, 0.5]` pixel units.
+    pub fn suggested_jitter(self, frame_index: u32, display_width: u32) -> [f32; 2] {
+        let native = self.native();
+        native.suggested_jitter(frame_index, native.jitter_phase_count(display_width))
+    }
+
+    /// Texture mip bias that keeps detail stable at the lower render resolution.
+    pub fn suggested_mip_bias(self, display_width: u32) -> f32 {
+        self.native().suggested_mip_bias(display_width)
+    }
+}
+
 impl Plugin for SolarikLightingPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(app, "gbuffer_utils.wesl");
@@ -112,6 +171,12 @@ impl Plugin for SolarikLightingPlugin {
             embedded_asset!(app, "nrd.wesl");
             app.sub_app_mut(RenderApp)
                 .add_systems(RenderStartup, nrd::init_pipelines);
+        }
+        #[cfg(feature = "fsr")]
+        {
+            embedded_asset!(app, "fsr.wesl");
+            app.sub_app_mut(RenderApp)
+                .add_systems(RenderStartup, fsr::init_fsr);
         }
 
         load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
@@ -203,6 +268,17 @@ pub struct SolarikLighting {
     /// Changing this flag resets NRD history on the next enabled frame.
     #[cfg(feature = "nrd")]
     pub nrd: bool,
+    /// Upscale the resolved opaque lighting with AMD FSR. Opt-in,
+    /// like `bevy_anti_alias::dlss::Dlss`; an unavailable provider keeps native
+    /// resolution instead of failing the frame.
+    #[cfg(feature = "fsr")]
+    pub fsr: bool,
+    /// FSR quality preset when `fsr` is enabled.
+    #[cfg(feature = "fsr")]
+    pub fsr_quality: FsrQualityMode,
+    /// FSR extra sharpening, `0..1`.
+    #[cfg(feature = "fsr")]
+    pub fsr_sharpness: f32,
     /// Runtime GI and world-cache budgets for this camera.
     pub quality: SolariQuality,
 }
@@ -213,6 +289,12 @@ impl Default for SolarikLighting {
             reset: true, // No temporal history on the first frame
             #[cfg(feature = "nrd")]
             nrd: true,
+            #[cfg(feature = "fsr")]
+            fsr: false,
+            #[cfg(feature = "fsr")]
+            fsr_quality: FsrQualityMode::default(),
+            #[cfg(feature = "fsr")]
+            fsr_sharpness: 0.0,
             quality: SolariQuality::default(),
         }
     }

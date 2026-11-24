@@ -1,5 +1,5 @@
 [workspace]
-members = ["vendor/bevy_render", "vendor/bevy_shader", "vendor/bevy_pbr", "vendor/dlss_wgpu", "crates/nrd-wgpu"]
+members = ["vendor/bevy_render", "vendor/bevy_shader", "vendor/bevy_pbr", "vendor/dlss_wgpu", "crates/nrd-wgpu", "crates/fsr-wgpu"]
 exclude = ["vendor/wgpu-core", "vendor/wgpu-hal", "vendor/meshopt"]
 resolver = "3"
 
@@ -30,6 +30,32 @@ force_disable_dlss = ["bevy_anti_alias/force_disable_dlss"]
 graphics_debug = ["bevy_pbr/graphics_debug"]
 # Source-built NVIDIA NRD RELAX, driven through wgpu's Vulkan backend on Windows/Linux.
 nrd = ["dep:solarik-nrd-wgpu"]
+# AMD FidelityFX Super Resolution as the temporal upscaler (solarik-fsr-wgpu).
+# The FfxApi provider DLL is loaded dynamically at runtime: no SDK, account,
+# DLL or environment variable is needed to build, and none is linked.
+fsr = ["dep:solarik-fsr-wgpu"]
+# Register FFX Vulkan device extensions at VkDevice creation (the measured
+# ffxCreateContext crash cause). Enables bevy_render's raw Vulkan init seam and
+# exposes install_fsr_device_extensions / FsrDeviceInitPlugin; the application
+# calls it before the renderer is built. Capability-filtered, safe on all GPUs.
+fsr_device_init = ["fsr", "bevy_render/raw_vulkan_init"]
+# FSR Ray Regeneration denoiser (DX12, RX 9000+). Wires the denoiser dispatch
+# descriptors from solarik-fsr-wgpu::effects into the Solari denoiser slot.
+fsr_ray_regeneration = ["fsr"]
+# FSR Radiance Caching (DX12) — dispatch chained before the FSR upscaler.
+fsr_radiance_cache = ["fsr"]
+# Frame generation (FSR FG + DLSS-G) — pacing/swapchain work, post-v1 backlog.
+fsr_frame_generation = ["fsr"]
+# NGX DLSS-G frame-generation data/keys layer (dlss_wgpu::frame_generation).
+# Header-verified parameter keys + enums; the create/evaluate runtime path is a
+# documented Unsupported stub until bindings are regenerated with dlssg.h.
+# `dlss_wgpu` is reached via bevy_anti_alias / BARD's own direct dependency, not
+# a direct dep here, so this is a plain marker feature like the fsr_* ones.
+dlss_frame_generation = []
+# Initialize NGX D3D12 at device creation for the DX12 backend (DLSS / DLSS RR).
+# Registers a RawDx12InitSettings callback that bevy_render now dispatches. The
+# application supplies its NGX project id at configure() time; capability-safe.
+dx12_ngx_init = ["dep:dlss_wgpu", "dep:uuid"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
@@ -48,6 +74,9 @@ serde_json = "1"
 
 [dependencies]
 solarik-nrd-wgpu = { path = "crates/nrd-wgpu", optional = true }
+solarik-fsr-wgpu = { path = "crates/fsr-wgpu", optional = true }
+dlss_wgpu = { version = "6.0.0", optional = true, features = ["dx12"] }
+uuid = { version = "1", optional = true }
 bevy_anti_alias = "0.20.0"
 bevy_app = "0.20.0"
 bevy_asset = "0.20.0"
@@ -74,6 +103,10 @@ bytemuck = "1"
 blake3 = "1"
 derive_more = { version = "2", default-features = false, features = ["from"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[build-dependencies]
+# Byte-compare deployed FSR runtime modules so a running game can keep its DLL open.
+blake3 = "1"
 
 # Solarik's lint policy; adjust it to support this crate's correctness and maintainability.
 [lints.clippy]

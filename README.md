@@ -2,7 +2,7 @@
 
 Ray-traced lighting for Bevy 0.20.0. This is a fork of Bevy's experimental `bevy_solari` renderer with sky lighting, point and spot lights, alpha-tested foliage, and a reference pathtracer that accumulates properly.
 
-It keeps Solari's ReSTIR direct and indirect lighting and world-space radiance cache. DLSS Ray Reconstruction is available through the optional `dlss` feature. The optional [`nrd` feature](docs/nrd.md) adds source-built NRD RELAX diffuse/specular denoising on Windows and Linux Vulkan when RR is absent.
+It keeps Solari's ReSTIR direct and indirect lighting and world-space radiance cache. DLSS Ray Reconstruction is available through the optional `dlss` feature. The optional [`nrd` feature](docs/nrd.md) adds source-built NRD RELAX diffuse/specular denoising on Windows and Linux Vulkan when RR is absent. The optional [`fsr` feature](docs/fsr.md) attaches AMD FidelityFX Super Resolution as the DLSS-equivalent temporal upscaler, loaded dynamically from the public MIT runtime (no SDK or account needed to build).
 
 The game renderer is tested on Windows with an RTX 4090 and Vulkan. NRD's controller and real compute dispatch/readback also pass on Linux's Vulkan software driver; native Linux hardware ray tracing remains untested. Current vendored Bevy renderer/PBR packages support Bevy 0.20.1.
 
@@ -64,6 +64,7 @@ The [capture record](docs/readme-captures.md) documents the remaining settling.
 
 ## What changed
 
+- The optional [`fsr` feature](docs/fsr.md) adds AMD FidelityFX Super Resolution through `solarik-fsr-wgpu`, a runtime-loaded FfxApi binding. It mirrors the DLSS/NRD pattern (feature flag, per-view controller, native artifact deployment) while keeping the provider strictly optional: no DLL, SDK or account is needed to build.
 - Development builds add optional [planetary atmosphere geometry and procedural clouds](docs/atmosphere.md#optional-spherical-world-mode-development), with finite shell clipping, opaque-depth composition and numerical orbital checks. Existing local-ground mode stays available.
 
 - The optional [GPU atmosphere](docs/atmosphere.md) supplies Rayleigh/Mie scattering, ozone, multiple scattering, physical sun/moon attenuation, stars and aerial perspective. Its disk-free cubemap lights rays that leave the scene.

@@ -4,8 +4,22 @@ use bevy_platform::collections::HashSet;
 use core::any::{Any, TypeId};
 use thiserror::Error;
 use wgpu::{
-    Adapter, Device, DeviceDescriptor, Instance, InstanceDescriptor, Queue, hal::api::Vulkan,
+    Adapter, Backends, Device, DeviceDescriptor, Instance, InstanceDescriptor, Queue,
+    hal::api::Vulkan,
 };
+
+/// Whether the raw Vulkan HAL instance path should be used for these backends.
+///
+/// `Instance::from_hal::<Vulkan>` yields a **Vulkan-only** wgpu instance (its
+/// `requested_backends`/`supported_backends` and `instance_per_backend` contain
+/// just Vulkan). If the application requested DX12 (or any non-Vulkan set),
+/// forcing that path would make the DX12 adapter unreachable — breaking runtime
+/// backend switching in a single binary. Only take the raw Vulkan path when
+/// Vulkan is actually among the requested backends; otherwise fall back to the
+/// ordinary multi-backend `Instance::new`. Pure, CPU-verifiable decision.
+pub(crate) fn raw_vulkan_instance_is_applicable(backends: Backends) -> bool {
+    backends.contains(Backends::VULKAN)
+}
 
 /// When the `raw_vulkan_init` feature is enabled, these settings will be used to configure the raw vulkan instance.
 #[derive(Resource, Default, Clone)]
@@ -75,6 +89,14 @@ pub(crate) fn create_raw_vulkan_instance(
     settings: &RawVulkanInitSettings,
     additional_features: &mut AdditionalVulkanFeatures,
 ) -> Instance {
+    // A Vulkan-only `from_hal` instance cannot serve a DX12 (or other
+    // non-Vulkan) adapter request. On those paths use the normal multi-backend
+    // instance so runtime backend switching keeps working; the NGX/FFX Vulkan
+    // create-device callbacks simply have no Vulkan adapter to act on and are
+    // inert (the DX12/FFX-DX12 providers use their own, non-Vulkan path).
+    if !raw_vulkan_instance_is_applicable(instance_descriptor.backends) {
+        return Instance::new(instance_descriptor);
+    }
     // SAFETY: Registering callbacks is unsafe. Callback authors promise not to remove features
     // or change the instance to something it does not support
     unsafe {
@@ -150,5 +172,32 @@ impl AdditionalVulkanFeatures {
 
     pub fn remove<T: Any>(&mut self) {
         self.0.remove(&TypeId::of::<T>());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_vulkan_instance_only_for_vulkan_backends() {
+        assert!(raw_vulkan_instance_is_applicable(Backends::VULKAN));
+        assert!(raw_vulkan_instance_is_applicable(
+            Backends::VULKAN | Backends::DX12
+        ));
+        assert!(raw_vulkan_instance_is_applicable(Backends::all()));
+    }
+
+    #[test]
+    fn non_vulkan_backends_use_normal_instance() {
+        // DX12 / Metal / GL-only requests must not be forced onto a Vulkan-only
+        // from_hal instance, or the requested adapter would be unreachable.
+        assert!(!raw_vulkan_instance_is_applicable(Backends::DX12));
+        assert!(!raw_vulkan_instance_is_applicable(Backends::METAL));
+        assert!(!raw_vulkan_instance_is_applicable(Backends::GL));
+        assert!(!raw_vulkan_instance_is_applicable(
+            Backends::DX12 | Backends::GL
+        ));
+        assert!(!raw_vulkan_instance_is_applicable(Backends::empty()));
     }
 }

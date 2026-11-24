@@ -1,6 +1,10 @@
 mod raster_precision;
+#[cfg(windows)]
+mod raw_dx12_init;
 #[cfg(feature = "raw_vulkan_init")]
 pub mod raw_vulkan_init;
+#[cfg(windows)]
+pub use raw_dx12_init::*;
 mod render_context;
 mod render_device;
 mod wgpu_wrapper;
@@ -205,6 +209,8 @@ pub async fn initialize_headless_renderer(options: &WgpuSettings) -> RenderResou
         options,
         #[cfg(feature = "raw_vulkan_init")]
         Default::default(),
+        #[cfg(windows)]
+        Default::default(),
     )
     .await
 }
@@ -217,6 +223,7 @@ pub async fn initialize_renderer(
     options: &WgpuSettings,
     #[cfg(feature = "raw_vulkan_init")]
     raw_vulkan_init_settings: raw_vulkan_init::RawVulkanInitSettings,
+    #[cfg(windows)] raw_dx12_init_settings: RawDx12InitSettings,
 ) -> RenderResources {
     let instance_descriptor = wgpu::InstanceDescriptor {
         backends,
@@ -390,6 +397,14 @@ pub async fn initialize_renderer(
 
     debug!("Configured wgpu adapter Limits: {:#?}", device.limits());
     debug!("Configured wgpu adapter Features: {:#?}", device.features());
+
+    // On a D3D12 device, hand the raw `ID3D12Device*` to NGX (DLSS / DLSS RR)
+    // and any other registered consumers via `RawDx12InitSettings`. This is a
+    // no-op on Vulkan/Metal/GL, so the single binary stays backend-agnostic.
+    #[cfg(windows)]
+    if raw_dx12_init_settings.run_callbacks_for_device(&device) {
+        debug!("D3D12 device create callbacks dispatched (NGX init)");
+    }
 
     RenderResources(
         RenderDevice::from(device),

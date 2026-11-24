@@ -12,26 +12,26 @@ use std::time::Instant;
 use bytemuck::TransparentWrapper;
 use parking_lot::Mutex;
 use windows::{
-    core::Interface as _,
     Win32::{
         Foundation,
         Graphics::{Direct3D12, Dxgi},
         System::Threading,
     },
+    core::Interface as _,
 };
 
-use super::{conv, descriptor, D3D12Lib};
+use super::{D3D12Lib, conv, descriptor};
 use crate::{
+    AccelerationStructureEntries, TlasInstance,
     auxil::{
         self,
         dxgi::{name::ObjectExt as _, result::HResult as _},
     },
     dx12::{
+        DCompLib, DynamicStorageBufferOffsets, Event, ShaderCacheKey, ShaderCacheValue,
         borrow_optional_interface_temporarily, pipeline_desc::RenderPipelineStateStreamDesc,
-        shader_compilation, suballocation, DCompLib, DynamicStorageBufferOffsets, Event,
-        ShaderCacheKey, ShaderCacheValue,
+        shader_compilation, suballocation,
     },
-    AccelerationStructureEntries, TlasInstance,
 };
 
 // this has to match Naga's HLSL backend, and also needs to be null-terminated
@@ -403,7 +403,7 @@ impl super::Device {
             super::ShaderModuleSource::DxilPassthrough(passthrough) => {
                 return Ok(super::CompiledShader::Precompiled(
                     passthrough.shader.clone(),
-                ))
+                ));
             }
         };
 
@@ -456,6 +456,14 @@ impl super::Device {
 
     pub fn raw_device(&self) -> &Direct3D12::ID3D12Device {
         &self.raw
+    }
+
+    /// The raw `ID3D12Device*` as an opaque `void*`, for interop with APIs
+    /// (e.g. NVIDIA NGX D3D12) that take the COM pointer. The returned pointer
+    /// borrows `self` and stays valid for the device's lifetime; callers must
+    /// not release it. `Interface::as_raw` yields exactly the COM pointer.
+    pub fn raw_device_ptr(&self) -> *mut ffi::c_void {
+        self.raw.as_raw()
     }
 
     pub fn raw_queue(&self) -> &Direct3D12::ID3D12CommandQueue {

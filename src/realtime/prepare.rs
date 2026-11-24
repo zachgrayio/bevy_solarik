@@ -54,6 +54,8 @@ pub struct SolarikLightingResources {
     has_dlss_rr: bool,
     #[cfg(feature = "nrd")]
     pub nrd: super::nrd::ViewDenoiser,
+    #[cfg(feature = "fsr")]
+    pub fsr: super::fsr::ViewFsr,
     pub sky_distribution: Buffer,
     pub light_tile_samples: Buffer,
     pub light_tile_resolved_samples: Buffer,
@@ -275,6 +277,8 @@ pub fn prepare_solari_lighting_resources(
             has_dlss_rr,
             #[cfg(feature = "nrd")]
             nrd: super::nrd::ViewDenoiser::new(&render_device, view_size),
+            #[cfg(feature = "fsr")]
+            fsr: super::fsr::ViewFsr::new(&render_device, view_size),
             sky_distribution,
             light_tile_samples,
             light_tile_resolved_samples,
