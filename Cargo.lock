@@ -306,6 +306,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_anti_alias"
+version = "0.20.1"
+dependencies = [
+ "bevy_app",
+ "bevy_asset",
+ "bevy_camera",
+ "bevy_core_pipeline",
+ "bevy_derive",
+ "bevy_diagnostic",
+ "bevy_ecs",
+ "bevy_extract",
+ "bevy_image",
+ "bevy_math",
+ "bevy_reflect",
+ "bevy_render",
+ "bevy_shader",
+ "bevy_utils",
+ "dlss_wgpu",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "bevy_app"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1076,7 +1099,7 @@ dependencies = [
 name = "bevy_solarik"
 version = "0.1.0"
 dependencies = [
- "bevy_anti_alias",
+ "bevy_anti_alias 0.20.0",
  "bevy_app",
  "bevy_asset",
  "bevy_camera",
@@ -1107,6 +1130,7 @@ dependencies = [
  "serde_json",
  "solarik-fsr-wgpu",
  "solarik-nrd-wgpu",
+ "solarik-streamline-wgpu",
  "tracing",
  "uuid",
  "wesl",
@@ -2503,8 +2527,6 @@ checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -3288,6 +3310,17 @@ dependencies = [
  "futures-lite",
  "half",
  "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
+name = "solarik-streamline-wgpu"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "libloading",
+ "thiserror 2.0.21",
+ "tracing",
  "wgpu",
 ]
 

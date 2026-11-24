@@ -184,16 +184,16 @@ impl Drop for DlssSdk {
     fn drop(&mut self) {
         match self.backend {
             SdkBackend::Vulkan => unsafe {
-                let hal_device = self.device.as_hal::<Vulkan>().unwrap();
-                hal_device
-                    .raw_device()
-                    .device_wait_idle()
-                    .expect("Failed to wait for idle device when destroying DlssSdk");
-
-                check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(self.parameters))
-                    .expect("Failed to destroy DlssSdk parameters");
-                check_ngx_result(NVSDK_NGX_VULKAN_Shutdown1(hal_device.raw_device().handle()))
-                    .expect("Failed to destroy DlssSdk");
+                // Teardown can run after the render world is gone; NGX answers
+                // "not initialized"/"feature not found" when something already released.
+                // A drop cannot report failure, so release best-effort instead of panicking.
+                if let Some(hal_device) = self.device.as_hal::<Vulkan>() {
+                    let _ = hal_device.raw_device().device_wait_idle();
+                    let _ = check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(self.parameters));
+                    let _ = check_ngx_result(NVSDK_NGX_VULKAN_Shutdown1(
+                        hal_device.raw_device().handle(),
+                    ));
+                }
             },
             #[cfg(all(windows, feature = "dx12"))]
             SdkBackend::Dx12 { owns_shutdown } => {
