@@ -1,10 +1,10 @@
-use super::{prepare::DlssRenderContext, Dlss, DlssFeature};
+use super::{Dlss, DlssFeature, prepare::DlssRenderContext};
 use bevy_camera::{Camera, Hdr, MainPassResolutionOverride, Projection};
 use bevy_ecs::{
     query::{Has, With},
     system::{Commands, Query, ResMut},
 };
-use bevy_render::{sync_world::RenderEntity, MainWorld};
+use bevy_render::{MainWorld, sync_world::RenderEntity};
 
 pub fn extract_dlss<F: DlssFeature>(
     mut commands: Commands,

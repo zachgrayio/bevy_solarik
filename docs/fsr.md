@@ -72,9 +72,72 @@ pass a raw `ID3D12Device*`/command-list pointer from the app's HAL interop.
 `EffectKind::from_create_desc`/`from_dispatch_desc` bridge the resolved
 `EffectChainPlan` (`src/realtime/effects_chain.rs::effect_create_descs`) to the
 context factory. Headless stub-FFI tests drive the full chain for all three
-effects; no DLL/GPU/window is needed. What remains hardware-gated (D12) is
-feeding real per-signal `VkImage`s/buffers and the FG swapchain present
-interception from the render node, plus image review on RX 9000+/RTX 50-series.
+effects; no DLL/GPU/window is needed. The neural radiance cache is not
+integrated (it needs prediction/training buffers Solari does not produce).
+
+## Ray Regeneration (DX12 denoiser)
+
+`src/realtime/fsr_effects.rs` + `fsr_rr.wesl` denoise Solari on DX12, where NRD
+(SPIR-V only) cannot run, mirroring the NRD integration:
+
+- Inputs come from Solari's `NRD_SIGNALS` split lighting (diffuse/specular radiance,
+  hit distance in alpha; requires the `nrd` feature for the signals).
+- `prepare_fsr_rr` divides out first-bounce albedo (the NRD factors, passed
+  separately with `NON_ENCODED_ALBEDO`), writes world-space octahedral normals with
+  linear roughness (material 0), signed view-space z (empty pixels `-1e6`, outside
+  `linearDepthBounds`, pass through) and Bevy UV motion plus the view-z delta
+  (`motionVectorScale = (-1, -1, 1)`). Signals: `INDIRECT_DIFFUSE | INDIRECT_SPECULAR`.
+- View/projection matrices are copied as-is (glam column-major = FFX row-major
+  with row vectors); jitter uses the upscaler's sign.
+- The `FfxApi` dispatch records raw D3D12 commands into its own encoder between the
+  wgpu prepare and resolve passes; wgpu rejects mixing raw and wgpu encoding on one
+  encoder (the previous placeholder panicked here). `resolve_fsr_rr` remodulates
+  and adds emission into the view target.
+- `SOLARIK_FSR_RR=0` skips denoising for A/B comparison.
+- Measured RX 9070 XT: brightness matches the Vulkan NRD reference in static
+  regions (1296x759, Performance); RT + FG x2 presents 72.7/s at 36.4 rendered/s
+  (1600x900, Quality).
+
+## Frame generation presentation
+
+FSR FG only adds frames through AMD's **frame-generation swapchain**, so the
+swapchain is installed underneath wgpu (`crates/fsr-wgpu/src/frame_generation.rs`,
+driven by `src/frame_generation.rs`):
+
+- DX12: `install_presentation` registers wgpu-hal's
+  `Dx12SwapchainHooks::create_swapchain_for_hwnd`, so window swapchains are created
+  by `ffxCreateContextDescFrameGenerationSwapChainForHwndDX12` (+ version 4.0.0
+  descriptor). Wrapping an existing swapchain is not used: the provider releases
+  the input and recreates on the same HWND while wgpu-hal still holds a reference.
+- Vulkan: the provider needs four distinct queues (game, async compute, present,
+  image acquire). `register_frame_generation_queues` raises queue counts in the
+  create-device callback (`fsr_device_init`); `install_presentation` routes
+  wgpu-hal's `VulkanSwapchainInterceptor` through
+  `ffxQueryDescSwapchainReplacementFunctionsVK`, recreating in place on resize.
+  `VkSwapchainCreateInfoKHR` is embedded **by value** in the create descriptor.
+  The present queue prefers a spare queue in a graphics+compute family so the
+  provider composes on it without queue-family ownership transfers.
+- Vulkan swapchain format: the provider creates its replacement, interpolation and
+  composition images in the swapchain's format with STORAGE usage and no
+  mutable-format flag. sRGB formats have no storage support (measured RX 9070 XT:
+  `R8G8B8A8_SRGB`/`B8G8R8A8_SRGB` false, UNORM true), so generated frames were
+  black and the screen flickered. `provider_swapchain_info` hands the provider the
+  UNORM equivalent; wgpu keeps rendering through sRGB views, as with DXGI on DX12.
+  The frame-generation context's `backBufferFormat` is that UNORM format on both
+  backends (it must equal the swapchain's `presentColor` format).
+- Per frame the window view calls `record_frame`: `ffxConfigure` with the proxy
+  swapchain and a dispatch callback, and, when enabled, `PrepareV2` (render-res
+  depth/motion vectors, jitter, camera planes/basis) on the render encoder. The
+  swapchain calls the callback at present; the app never dispatches
+  `ffxDispatchDescFrameGeneration` itself.
+- `present_counters()` reports rendered frames vs real swapchain presents
+  (`GetLastPresentCount` / `getLastPresentCountFFXAPI`).
+- `SOLARIK_FSR_FG_SWAPCHAIN=0` keeps the plain swapchain and reports FSR FG
+  unsupported. `SOLARIK_FSR_FG_DEBUG_CHECKS=1` creates the context with
+  `ENABLE_DEBUG_CHECKING`. Provider errors/warnings go to tracing target
+  `fidelityfx`; debug-level logs carry periodic rendered/presented/generated/failed
+  counts.
+- Not yet: HUD-less color or a UI resource, so UI is interpolated with the scene.
 
 ## Engine attach
 

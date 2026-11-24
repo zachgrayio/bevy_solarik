@@ -30,7 +30,7 @@
 //!
 //! [SMAA]: https://www.iryoku.com/smaa/
 use bevy_app::{App, Plugin};
-use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
+use bevy_asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};
 use bevy_core_pipeline::{
     schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems},
     tonemapping::tonemapping,
@@ -46,15 +46,15 @@ use bevy_ecs::{
     system::{Commands, Query, Res, ResMut},
 };
 use bevy_image::{Image, ToExtents};
-use bevy_math::{vec4, Vec4};
-use bevy_reflect::{std_traits::ReflectDefault, Reflect};
+use bevy_math::{Vec4, vec4};
+use bevy_reflect::{Reflect, std_traits::ReflectDefault};
 use bevy_render::{
+    GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
     camera::ExtractedCamera,
     diagnostic::RecordDiagnostics,
     extract_component::{ExtractComponent, ExtractComponentPlugin},
     render_asset::RenderAssets,
     render_resource::{
-        binding_types::{sampler, texture_2d, uniform_buffer},
         AddressMode, BindGroup, BindGroupEntries, BindGroupLayoutDescriptor,
         BindGroupLayoutEntries, CachedRenderPipelineId, ColorTargetState, ColorWrites,
         CompareFunction, DepthStencilState, DynamicUniformBuffer, FilterMode, FragmentState,
@@ -64,11 +64,11 @@ use bevy_render::{
         SpecializedRenderPipeline, SpecializedRenderPipelines, StencilFaceState, StencilOperation,
         StencilState, StoreOp, TextureDescriptor, TextureDimension, TextureFormat,
         TextureSampleType, TextureUsages, TextureView, VertexState,
+        binding_types::{sampler, texture_2d, uniform_buffer},
     },
     renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
     texture::{CachedTexture, GpuImage, TextureCache},
     view::{ExtractedView, ViewTarget},
-    GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use bevy_shader::{Shader, ShaderDefVal};
 use bevy_utils::prelude::default;

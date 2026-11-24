@@ -1,8 +1,8 @@
-//! Camera-level scaled AMD FidelityFX FSR temporal upscaler for both Vulkan and DX12.
+//! Camera-level scaled AMD `FidelityFX` FSR temporal upscaler for both Vulkan and DX12.
 //!
 //! Mirrors `bevy_anti_alias::dlss`: attaches as an optional [`FsrUpscaler`] component
 //! on any HDR `Camera3d`, sets `MainPassResolutionOverride`, `TemporalJitter`, and
-//! `MipBias`, and dispatches real FidelityFX FSR (`amd_fidelityfx_loader_vk.dll` /
+//! `MipBias`, and dispatches real `FidelityFX` FSR (`amd_fidelityfx_loader_vk.dll` /
 //! `amd_fidelityfx_loader_dx12.dll`) in `Core3dSystems::EarlyPostProcess` — working
 //! identically on **both** raster and ray-traced cameras, on **both** DX12 and Vulkan.
 
@@ -27,17 +27,15 @@ use bevy_render::{
     sync_world::RenderEntity,
     view::{ExtractedView, ViewTarget, prepare_view_targets},
 };
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
-/// Inserted on the main [`App`] when the runtime FidelityFX FSR provider loaded
+/// Inserted on the main [`App`] when the runtime `FidelityFX` FSR provider loaded
 /// cleanly for the active graphics backend (Vulkan or DX12).
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FsrUpscalerSupported;
 
-/// Camera component enabling scaled AMD FidelityFX FSR temporal upscaling.
+/// Camera component enabling scaled AMD `FidelityFX` FSR temporal upscaling.
 #[derive(Component, Reflect, Clone, Copy, Debug)]
 #[reflect(Component, Default, Clone)]
 #[require(TemporalJitter, MipBias, DepthPrepass, MotionVectorPrepass, Hdr)]
@@ -271,10 +269,10 @@ fn run_fsr_upscaler(
 
     solarik_fsr_wgpu::Context::transition_resources(
         ctx.command_encoder(),
-        &post_process.source,
+        post_process.source,
         &prepass_depth.texture.default_view,
         &prepass_motion.texture.default_view,
-        &post_process.destination,
+        post_process.destination,
     );
 
     let mut fsr_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
@@ -284,10 +282,10 @@ fn run_fsr_upscaler(
     let dispatch_result = {
         let mut context = fsr_ctx.context.lock().expect("FSR context mutex poisoned");
         context.dispatch(solarik_fsr_wgpu::Dispatch {
-            color: &post_process.source,
+            color: post_process.source,
             depth: &prepass_depth.texture.default_view,
             motion_vectors: &prepass_motion.texture.default_view,
-            output: &post_process.destination,
+            output: post_process.destination,
             exposure: None,
             reactive: None,
             transparency_and_composition: None,

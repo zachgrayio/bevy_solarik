@@ -1,5 +1,5 @@
-//! The only unsafe ABI boundary in this crate: the pinned AMD FidelityFX SDK
-//! "FfxApi" C declarations and their runtime-loaded function table.
+//! The only unsafe ABI boundary in this crate: the pinned AMD `FidelityFX` SDK
+//! "`FfxApi`" C declarations and their runtime-loaded function table.
 //!
 //! Transcribed from the FidelityFX-SDK headers (`Kits/FidelityFX/api/include/ffx_api.h`,
 //! `ffx_api_types.h`, `ffx_api_loader.h`, `vk/ffx_api_vk.h` and
@@ -65,7 +65,9 @@ impl FfxApiHeader {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Dimensions2D {
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
 }
 
@@ -73,7 +75,9 @@ pub struct Dimensions2D {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct FloatCoords2D {
+    /// Horizontal coordinate.
     pub x: f32,
+    /// Vertical coordinate.
     pub y: f32,
 }
 
@@ -81,13 +85,21 @@ pub struct FloatCoords2D {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct ResourceDescription {
+    /// Resource dimensionality (`FfxApiResourceType`).
     pub resource_type: u32,
+    /// Surface format (`FfxApiSurfaceFormat`).
     pub format: u32,
+    /// Width in pixels (or byte size for buffers).
     pub width: u32,
+    /// Height in pixels (or byte stride for buffers).
     pub height: u32,
+    /// Depth / array slice count.
     pub depth: u32,
+    /// Mip level count.
     pub mip_count: u32,
+    /// Resource flags.
     pub flags: u32,
+    /// Resource usage bitmask (`FfxApiResourceUsage`).
     pub usage: u32,
 }
 
@@ -96,8 +108,11 @@ pub struct ResourceDescription {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Resource {
+    /// Native `VkImage` or `ID3D12Resource*` handle.
     pub resource: *mut c_void,
+    /// Resource dimensions, format and usage metadata.
     pub description: ResourceDescription,
+    /// Current resource state (`FfxApiResourceState`).
     pub state: u32,
 }
 
@@ -130,7 +145,7 @@ pub struct CreateContextDescUpscale {
     pub message: *mut c_void,
 }
 
-/// `VkDeviceContext` from `ffx_api_vk.h`. Handles are opaque pointers on x86_64.
+/// `VkDeviceContext` from `ffx_api_vk.h`. Handles are opaque pointers on `x86_64`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DeviceContextVk {
@@ -233,7 +248,7 @@ const _: () = assert!(size_of::<QueryDescRenderResolution>() == 48);
 const _: () = assert!(size_of::<QueryDescJitterPhaseCount>() == 32);
 const _: () = assert!(size_of::<QueryDescJitterOffset>() == 40);
 
-/// The five FfxApi exports, mirroring `ffxFunctions` in `ffx_api_loader.h`.
+/// The five `FfxApi` exports, mirroring `ffxFunctions` in `ffx_api_loader.h`.
 #[derive(Clone, Copy)]
 pub(crate) struct Functions {
     pub create_context: unsafe extern "C" fn(
@@ -243,10 +258,7 @@ pub(crate) struct Functions {
     ) -> ReturnCode,
     pub destroy_context:
         unsafe extern "C" fn(*mut Context, *const AllocationCallbacks) -> ReturnCode,
-    /// Resolved for ABI completeness; this integration configures through the
-    /// create descriptor. The in-process stub-FFI tests call `ffxConfigure` to
-    /// exercise the additional 2.4.0 descriptors.
-    #[allow(dead_code)]
+    /// `ffxConfigure`: per-frame frame-generation configuration.
     pub configure: unsafe extern "C" fn(*mut Context, *const FfxApiHeader) -> ReturnCode,
     pub query: unsafe extern "C" fn(*mut Context, *mut FfxApiHeader) -> ReturnCode,
     pub dispatch: unsafe extern "C" fn(*mut Context, *const FfxApiHeader) -> ReturnCode,
@@ -275,7 +287,7 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
-/// Graphics API backend for which to load the FidelityFX provider DLL.
+/// Graphics API backend for which to load the `FidelityFX` provider DLL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     /// Vulkan (`amd_fidelityfx_loader_vk.dll` / `.so`).
@@ -377,7 +389,7 @@ impl Module {
     }
 
     /// Build a module from a fixed function table, without loading any DLL.
-    /// Used only by unit tests to exercise the FfxApi call chain in-process.
+    /// Used only by unit tests to exercise the `FfxApi` call chain in-process.
     #[cfg(test)]
     pub(crate) fn stub(functions: Functions) -> Self {
         Self {
@@ -386,7 +398,7 @@ impl Module {
         }
     }
 
-    /// Safe wrappers keep every `unsafe` FfxApi call inside this `#[allow]` module.
+    /// Safe wrappers keep every `unsafe` `FfxApi` call inside this `#[allow]` module.
     pub(crate) fn query(&self, context: *mut Context, desc: *mut FfxApiHeader) -> ReturnCode {
         // SAFETY: the caller owns the context and keeps the descriptor alive.
         unsafe { (self.functions.query)(context, desc) }
@@ -412,9 +424,8 @@ impl Module {
         unsafe { (self.functions.destroy_context)(context, std::ptr::null()) }
     }
 
-    /// Safe wrapper for `ffxConfigure`, used by the `#[cfg(test)]` stub-FFI
-    /// tests. Keeps the `unsafe` call inside this `#[allow]` module.
-    #[cfg(test)]
+    /// Safe wrapper for `ffxConfigure` (per-frame frame-generation configuration
+    /// and the stub-FFI tests). Keeps the `unsafe` call inside this module.
     pub(crate) fn configure(&self, context: *mut Context, desc: *const FfxApiHeader) -> ReturnCode {
         // SAFETY: the context is live and the descriptor outlives the call.
         unsafe { (self.functions.configure)(context, desc) }
@@ -463,7 +474,7 @@ unsafe fn resolve(library: &libloading::Library) -> Result<Functions, LoadError>
     })
 }
 
-/// Opaque, `Send`-able FfxApi context handle.
+/// Opaque, `Send`-able `FfxApi` context handle.
 #[derive(Clone, Copy)]
 pub(crate) struct Handle(pub Context);
 
@@ -550,7 +561,7 @@ pub(crate) fn stub_descriptors() -> Box<PinnedDescriptors> {
 
 #[cfg(test)]
 mod tests {
-    //! Exercise the whole FfxApi call chain in-process, without an AMD DLL.
+    //! Exercise the whole `FfxApi` call chain in-process, without an AMD DLL.
     //! The stubs have the exact C ABI signatures and inspect the `#[repr(C)]`
     //! descriptors through raw pointers, just as a real provider does.
 

@@ -26,9 +26,13 @@ pub mod depth_probe;
 #[cfg(all(windows, feature = "dx12_ngx_init"))]
 pub mod dx12_ngx_init;
 pub mod filtered_canopy;
+#[cfg(any(feature = "dlss_frame_generation", feature = "fsr_frame_generation"))]
+pub mod frame_generation;
 #[cfg(feature = "fsr_device_init")]
 pub mod fsr_device_init;
 pub mod gaussian;
+mod graphics_session;
+pub use graphics_session::run_app;
 pub mod lommel;
 pub mod material;
 pub mod optics;

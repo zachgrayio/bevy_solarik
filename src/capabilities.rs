@@ -147,18 +147,27 @@ mod tests {
 
     #[test]
     fn frame_generation_is_the_union_of_all_providers() {
-        let mut caps = RendererCapabilities::default();
-        caps.vulkan_fsr_frame_generation = true;
-        assert!(caps.frame_generation_supported());
-        caps.vulkan_fsr_frame_generation = false;
-        caps.vulkan_dlss_frame_generation = true;
-        assert!(caps.frame_generation_supported());
-        caps.vulkan_dlss_frame_generation = false;
-        caps.dx12_fsr_frame_generation = true;
-        assert!(caps.frame_generation_supported());
-        caps.dx12_fsr_frame_generation = false;
-        caps.dx12_dlss_frame_generation = true;
-        assert!(caps.frame_generation_supported());
+        let none = RendererCapabilities::default();
+        for caps in [
+            RendererCapabilities {
+                vulkan_fsr_frame_generation: true,
+                ..none
+            },
+            RendererCapabilities {
+                vulkan_dlss_frame_generation: true,
+                ..none
+            },
+            RendererCapabilities {
+                dx12_fsr_frame_generation: true,
+                ..none
+            },
+            RendererCapabilities {
+                dx12_dlss_frame_generation: true,
+                ..none
+            },
+        ] {
+            assert!(caps.frame_generation_supported());
+        }
     }
 
     #[test]

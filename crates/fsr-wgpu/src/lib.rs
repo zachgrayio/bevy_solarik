@@ -1,7 +1,7 @@
 //! # solarik-fsr-wgpu
 //!
-//! AMD FidelityFX Super Resolution (FSR 3.x) for wgpu 30's Vulkan backend, bound
-//! to the FidelityFX SDK's five-function **FfxApi** C ABI and loaded **at runtime**
+//! AMD `FidelityFX` Super Resolution (FSR 3.x) for wgpu 30's Vulkan backend, bound
+//! to the `FidelityFX` SDK's five-function **`FfxApi`** C ABI and loaded **at runtime**
 //! with `libloading`. This is the AMD counterpart of the fork's
 //! `vendor/dlss_wgpu`; see `docs/fsr.md` in the parent crate for integration.
 //!
@@ -37,6 +37,11 @@ pub mod effect;
 pub mod effects;
 #[allow(
     unsafe_code,
+    reason = "The frame-generation swapchain calls back into Rust through a C function pointer"
+)]
+pub mod frame_generation;
+#[allow(
+    unsafe_code,
     reason = "The FfxApi ABI and raw Vulkan handles are isolated behind owned safe Rust values"
 )]
 mod native;
@@ -65,12 +70,12 @@ use std::sync::Arc;
 /// Failures detected before submitting FSR work.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// No FidelityFX provider module could be loaded.
+    /// No `FidelityFX` provider module could be loaded.
     #[error(
         "AMD FidelityFX FSR runtime not found (set FSR_DLL / FSR_RUNTIME_DIR / FSR_NATIVE_LIBS): {0}"
     )]
     Library(String),
-    /// A module loaded but was missing one of the five FfxApi exports.
+    /// A module loaded but was missing one of the five `FfxApi` exports.
     #[error("FidelityFX provider is missing symbol {0}: {1}")]
     Symbol(&'static str, String),
     /// `ffxReturnCode_t` other than `FFX_API_RETURN_OK`.
@@ -82,6 +87,9 @@ pub enum Error {
     /// Zero or oversized dimensions were requested.
     #[error("FSR requires nonzero dimensions no larger than 65535")]
     Dimensions,
+    /// The device or backend cannot host the requested effect.
+    #[error("FSR effect unsupported: {0}")]
+    Unsupported(&'static str),
     /// A descriptor header kind did not match the effect it was passed to.
     #[error("FfxApi descriptor kind mismatch: expected {expected:#x}, got {found:#x}")]
     Descriptor {
@@ -103,7 +111,7 @@ impl From<native::LoadError> for Error {
     }
 }
 
-/// A loaded FidelityFX provider module. Create one per application (or per
+/// A loaded `FidelityFX` provider module. Create one per application (or per
 /// render device) and share it through [`Arc`](std::sync::Arc); it is cheap to
 /// clone and owns the dynamic library handle.
 #[derive(Clone)]
@@ -144,7 +152,7 @@ impl Library {
 }
 
 /// Build a `Library` around an in-process stub `Module` for unit tests. No DLL,
-/// GPU or device is involved; only the resolved FfxApi function table is used.
+/// GPU or device is involved; only the resolved `FfxApi` function table is used.
 #[cfg(test)]
 pub(crate) fn stub_library(module: Arc<native::Module>) -> Library {
     Library { module }

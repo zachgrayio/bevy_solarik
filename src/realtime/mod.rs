@@ -3,6 +3,8 @@ mod extract;
 #[cfg(feature = "fsr")]
 mod fsr;
 #[cfg(feature = "fsr")]
+mod fsr_effects;
+#[cfg(feature = "fsr")]
 pub mod fsr_upscaler;
 #[cfg(feature = "fsr")]
 pub use fsr_upscaler::{FsrUpscaler, FsrUpscalerPlugin, FsrUpscalerSupported};
@@ -102,7 +104,7 @@ impl SolariQuality {
     }
 }
 
-/// AMD FidelityFX FSR quality preset, the engine-facing equivalent of
+/// AMD `FidelityFX` FSR quality preset, the engine-facing equivalent of
 /// `bevy_anti_alias::dlss::DlssPerfQualityMode`. It drives the camera's render
 /// resolution, `TemporalJitter` and `MipBias`; see `docs/fsr.md`.
 #[cfg(feature = "fsr")]
@@ -174,6 +176,8 @@ impl Plugin for SolarikLightingPlugin {
         embedded_asset!(app, "nrd.wesl");
         #[cfg(feature = "fsr")]
         embedded_asset!(app, "fsr.wesl");
+        #[cfg(all(feature = "fsr", feature = "nrd"))]
+        embedded_asset!(app, "fsr_rr.wesl");
 
         load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
 
@@ -204,7 +208,14 @@ impl Plugin for SolarikLightingPlugin {
             render_app.add_systems(RenderStartup, nrd::init_pipelines);
         }
         #[cfg(feature = "fsr")]
-        render_app.add_systems(RenderStartup, fsr::init_fsr);
+        render_app
+            .init_resource::<fsr_effects::FsrSolariEffects>()
+            .add_systems(RenderStartup, fsr::init_fsr);
+        // FSR Ray Regeneration denoises Solari's split signals where NRD cannot run.
+        #[cfg(all(feature = "fsr", feature = "nrd"))]
+        if is_dx12 {
+            render_app.add_systems(RenderStartup, fsr_effects::init_pipelines);
+        }
 
         render_app
             .init_resource::<PrimaryGlassViews>()
@@ -230,9 +241,10 @@ impl Plugin for SolarikLightingPlugin {
                 Core3d,
                 solarik_lighting::<false>
                     // Resolve deferred lighting before forward opaque/masked content.
-                    // Otherwise unlit sprites are overwritten by the G-buffer behind them.
+                    // Otherwise unlit sprites and emissive VFX are overwritten by the
+                    // G-buffer behind them. The atmosphere sky is a later pass and does
+                    // not depend on this resolve.
                     .before(main_opaque_pass_3d)
-                    .after(crate::atmosphere::AtmosphereBackground)
                     .before(main_transparent_pass_3d)
                     .in_set(Core3dSystems::MainPass),
             )
@@ -288,6 +300,12 @@ pub struct SolarikLighting {
     /// FSR extra sharpening, `0..1`.
     #[cfg(feature = "fsr")]
     pub fsr_sharpness: f32,
+    /// Enable AMD FSR Ray Regeneration denoiser (DX12 / RX 9000+ only).
+    #[cfg(feature = "fsr")]
+    pub fsr_rr: bool,
+    /// Enable AMD FSR Neural Radiance Cache (DX12 / RX 9000+ only).
+    #[cfg(feature = "fsr")]
+    pub fsr_radiance_cache: bool,
     /// Runtime GI and world-cache budgets for this camera.
     pub quality: SolariQuality,
 }
@@ -304,6 +322,10 @@ impl Default for SolarikLighting {
             fsr_quality: FsrQualityMode::default(),
             #[cfg(feature = "fsr")]
             fsr_sharpness: 0.0,
+            #[cfg(feature = "fsr")]
+            fsr_rr: false,
+            #[cfg(feature = "fsr")]
+            fsr_radiance_cache: false,
             quality: SolariQuality::default(),
         }
     }

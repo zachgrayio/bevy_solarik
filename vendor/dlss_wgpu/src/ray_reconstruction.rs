@@ -517,18 +517,20 @@ impl Drop for DlssRayReconstruction {
         let backend = self.sdk.lock().unwrap().backend;
         match backend {
             crate::sdk::SdkBackend::Vulkan => unsafe {
-                let hal_device = self.device.as_hal::<Vulkan>().unwrap();
-                hal_device
-                    .raw_device()
-                    .device_wait_idle()
-                    .expect("Failed to wait for idle device when destroying DlssRayReconstruction");
-
-                check_ngx_result(NVSDK_NGX_VULKAN_ReleaseFeature(self.feature))
-                    .expect("Failed to destroy DlssRayReconstruction feature");
+                // Teardown can run after the render world is gone; NGX answers
+                // "not initialized"/"feature not found" when something already released.
+                // A drop cannot report failure, so release best-effort instead of panicking.
+                if let Some(hal_device) = self.device.as_hal::<Vulkan>() {
+                    let _ = hal_device.raw_device().device_wait_idle();
+                    let _ = check_ngx_result(NVSDK_NGX_VULKAN_ReleaseFeature(self.feature));
+                }
             },
             #[cfg(all(windows, feature = "dx12"))]
             crate::sdk::SdkBackend::Dx12 { .. } => {
                 let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                // Native NGX calls are not thread safe. Keep GPU polling outside this
+                // lock, but serialize release with every other client of the SDK.
+                let _sdk = self.sdk.lock().unwrap();
                 unsafe {
                     let _ = check_ngx_result(NVSDK_NGX_D3D12_ReleaseFeature(self.feature));
                 }

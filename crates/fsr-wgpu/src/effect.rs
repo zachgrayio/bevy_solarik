@@ -100,6 +100,18 @@ impl EffectKind {
     pub fn create_desc(self) -> u64 {
         self.descriptors().0
     }
+
+    /// Whether `kind` is a dispatch descriptor this effect's context accepts.
+    /// Frame generation also takes its per-frame prepare descriptors.
+    pub fn accepts_dispatch(self, kind: u64) -> bool {
+        use effects::desc_types as d;
+        kind == self.descriptors().1
+            || (self == Self::FrameGeneration
+                && matches!(
+                    kind,
+                    d::FRAMEGENERATION_PREPARE | d::FRAMEGENERATION_PREPARE_V2
+                ))
+    }
 }
 
 /// Creation parameters shared by the three effects. Effect-specific fields are
@@ -149,6 +161,56 @@ pub enum BackendDevice<'a> {
     Dx12(*mut c_void),
 }
 
+impl<'a> BackendDevice<'a> {
+    /// Detect the active wgpu backend (Vulkan or Windows DX12) and build the
+    /// matching [`BackendDevice`].
+    pub fn from_wgpu(device: &'a wgpu::Device) -> Result<Self, Error> {
+        if vulkan::device_context(device).is_some() {
+            return Ok(Self::Vulkan(device));
+        }
+        #[cfg(windows)]
+        if let Some(ptr) = crate::dx12::device_ptr(device) {
+            return Ok(Self::Dx12(ptr));
+        }
+        Err(Error::NoVulkan)
+    }
+}
+
+/// Put `reads` in the shader-resource state and `writes` in the read-write storage
+/// state on `encoder`, so a later raw `FfxApi` dispatch (recorded into its own
+/// encoder: wgpu forbids mixing raw and wgpu encoding) finds them where its
+/// resource descriptions say (`PIXEL_COMPUTE_READ` / `UNORDERED_ACCESS`).
+pub fn transition_for_dispatch(
+    encoder: &mut wgpu::CommandEncoder,
+    reads: &[&wgpu::TextureView],
+    writes: &[&wgpu::TextureView],
+) {
+    let read = reads.iter().map(|view| wgpu::TextureTransition {
+        texture: view.texture(),
+        selector: None,
+        state: wgpu::TextureUses::RESOURCE,
+    });
+    let write = writes.iter().map(|view| wgpu::TextureTransition {
+        texture: view.texture(),
+        selector: None,
+        state: wgpu::TextureUses::STORAGE_READ_WRITE,
+    });
+    encoder.transition_resources(std::iter::empty(), read.chain(write));
+}
+
+/// Convert a wgpu texture view into a `FfxApiResource` for the active backend
+/// (Vulkan `VkImage` or Windows DX12 `ID3D12Resource*`).
+pub fn resource_for_wgpu(view: &wgpu::TextureView, state: u32) -> Result<native::Resource, Error> {
+    if let Some(res) = vulkan::resource(view, state) {
+        return Ok(res);
+    }
+    #[cfg(windows)]
+    if let Some(res) = crate::dx12::resource(view, state) {
+        return Ok(res);
+    }
+    Err(Error::NoVulkan)
+}
+
 enum BackendDesc {
     Vk(native::CreateBackendVkDesc),
     Dx12(effects::CreateBackendDx12Desc),
@@ -189,6 +251,8 @@ enum Chain {
     },
     FrameGeneration {
         create: effects::CreateContextDescFrameGeneration,
+        /// Selects the 4.0 API (`PrepareV2`); without it providers assume 3.1.x.
+        version: effects::CreateContextDescFrameGenerationVersion,
         backend: BackendDesc,
     },
 }
@@ -244,6 +308,10 @@ impl Chain {
                     max_render_size: dims(cfg.max_render_size),
                     backbuffer_format: cfg.backbuffer_format,
                 },
+                version: effects::CreateContextDescFrameGenerationVersion {
+                    header: FfxApiHeader::new(effects::desc_types::FRAMEGENERATION_VERSION),
+                    version: version_id,
+                },
                 backend,
             },
         })
@@ -280,7 +348,16 @@ impl Chain {
         match self {
             Self::Denoiser { create, backend } => arm!(create, backend),
             Self::RadianceCache { create, backend } => arm!(create, backend),
-            Self::FrameGeneration { create, backend } => arm!(create, backend),
+            Self::FrameGeneration {
+                create,
+                version,
+                backend,
+            } => {
+                let backend: &mut FfxApiHeader = backend.header_mut();
+                version.header.next = ptr::from_mut(backend);
+                create.header.next = ptr::from_mut(&mut version.header);
+                ptr::from_mut(&mut create.header)
+            }
         }
     }
 }
@@ -312,6 +389,7 @@ impl_effect_dispatch!(
     effects::DispatchDescDenoiser,
     effects::DispatchDescRadianceCache,
     effects::DispatchDescFrameGeneration,
+    effects::DispatchDescFrameGenerationPrepareV2,
 );
 
 /// An owned `FfxApi` context for one of [`EffectKind`]. Implements `Drop` so the
@@ -322,6 +400,14 @@ pub struct EffectContext {
     _chain: Box<Chain>,
     kind: EffectKind,
 }
+
+// SAFETY: `Chain` stays pinned in a never-relocated heap allocation, `Handle`
+// has no thread affinity, and callers serialize access via `&mut EffectContext`.
+#[allow(
+    unsafe_code,
+    reason = "Pinned FfxApi effect descriptor chain and handle are Send (matching Context)"
+)]
+unsafe impl Send for EffectContext {}
 
 impl EffectContext {
     /// Create an effect context for `kind` on `device` through
@@ -384,15 +470,32 @@ impl EffectContext {
     /// Validates that the header kind matches this context's effect before
     /// the FFI call, so an RR context cannot be handed an FG descriptor.
     pub fn dispatch(&mut self, desc: &FfxApiHeader) -> Result<(), Error> {
-        let (_, expected, _) = self.kind.descriptors();
-        if desc.kind != expected {
-            return Err(Error::Descriptor {
-                expected,
-                found: desc.kind,
-            });
-        }
+        self.check_dispatch(desc.kind)?;
         let mut handle = self.handle;
         crate::status_ok(self.library.dispatch(&mut handle.0, ptr::from_ref(desc)))
+    }
+
+    /// Issue `ffxConfigure` for a caller-built configure descriptor chain.
+    pub fn configure(&mut self, desc: &FfxApiHeader) -> Result<(), Error> {
+        let mut handle = self.handle;
+        crate::status_ok(self.library.configure(&mut handle.0, ptr::from_ref(desc)))
+    }
+
+    /// The provider module and raw context handle, for present-time callbacks
+    /// that must call `ffxDispatch` without borrowing this context.
+    pub(crate) fn raw_parts(&self) -> (Arc<native::Module>, native::Handle) {
+        (Arc::clone(&self.library), self.handle)
+    }
+
+    fn check_dispatch(&self, kind: u64) -> Result<(), Error> {
+        if self.kind.accepts_dispatch(kind) {
+            Ok(())
+        } else {
+            Err(Error::Descriptor {
+                expected: self.kind.descriptors().1,
+                found: kind,
+            })
+        }
     }
 
     /// Validate `desc`, inject the live `VkCommandBuffer` from a wgpu encoder,
@@ -404,13 +507,7 @@ impl EffectContext {
         encoder: &mut wgpu::CommandEncoder,
         desc: &mut D,
     ) -> Result<(), Error> {
-        let (_, expected, _) = self.kind.descriptors();
-        if desc.header().kind != expected {
-            return Err(Error::Descriptor {
-                expected,
-                found: desc.header().kind,
-            });
-        }
+        self.check_dispatch(desc.header().kind)?;
         let library = Arc::clone(&self.library);
         let mut handle = self.handle;
         let out = vulkan::with_command_buffer(encoder, |command_list| {
@@ -418,6 +515,32 @@ impl EffectContext {
             crate::status_ok(library.dispatch(&mut handle.0, ptr::from_ref(desc.header())))
         });
         out.unwrap_or(Err(Error::NoVulkan))
+    }
+
+    /// Validate `desc`, inject the live `VkCommandBuffer` or
+    /// `ID3D12GraphicsCommandList*` from a wgpu encoder, and issue `ffxDispatch`.
+    pub fn dispatch_wgpu<D: EffectDispatch>(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        desc: &mut D,
+    ) -> Result<(), Error> {
+        self.check_dispatch(desc.header().kind)?;
+        let library = Arc::clone(&self.library);
+        let mut handle = self.handle;
+        if let Some(res) = vulkan::with_command_buffer(encoder, |command_list| {
+            desc.set_command_list(command_list);
+            crate::status_ok(library.dispatch(&mut handle.0, ptr::from_ref(desc.header())))
+        }) {
+            return res;
+        }
+        #[cfg(windows)]
+        if let Some(res) = crate::dx12::with_command_list(encoder, |command_list| {
+            desc.set_command_list(command_list);
+            crate::status_ok(library.dispatch(&mut handle.0, ptr::from_ref(desc.header())))
+        }) {
+            return res;
+        }
+        Err(Error::NoVulkan)
     }
 }
 

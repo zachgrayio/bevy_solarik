@@ -111,6 +111,9 @@ impl Plugin for AtmospherePlugin {
                 .configure_sets(
                     Core3d,
                     AtmosphereBackground
+                        // The sky has to come after the opaque pass (that pass clears the
+                        // target); Solarik's deferred resolve therefore runs after this
+                        // background instead of before the opaque pass.
                         .after(main_opaque_pass_3d)
                         .before(main_transparent_pass_3d)
                         .in_set(Core3dSystems::MainPass),

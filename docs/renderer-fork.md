@@ -10,8 +10,8 @@ Applications must apply the root Cargo patch shown in the README. A dependency's
 local renderer too, so the application and Bevy's transitive dependencies must
 resolve to that same crate. Use `cargo tree -i bevy_render` to inspect resolution.
 
-The current root patches also include Bevy PBR 0.20.0 and wgpu-core/wgpu-hal
-30.0.1. The former 0.19 WGSL copies were replaced by actual WESL 0.6 modules;
+The current development packages target Bevy 0.20.1, including PBR/anti-alias support,
+and wgpu-core/wgpu-hal 30.0.1. The former 0.19 WGSL copies were replaced by actual WESL 0.6 modules;
 self-contained WGSL kernels remain supported. Pending material retries retain
 the local visibility filter before upstream queue deduplication. Generic
 publication/readiness, material mutation receipts, storage/TLAS and meshlet
@@ -23,6 +23,13 @@ imports through `build.rs`; this preserves the crate's unsafe-code denial.
 The complete NVIDIA SDK 310.9.1 is required by dlss_wgpu 6. The earlier Bistro
 measurements below describe the historical visibility fix, not new migration
 captures. Current source/runtime receipts must verify the accepted checkout.
+
+## Shared native runtime ownership
+
+D3D12 NGX/Streamline consumers use the outer `bevy_solarik::run_app` builder owner, not
+main-world resource-drop order. [Graphics-session lifetime](graphics-session.md) owns the
+SDK leases, closing barrier, parameter/provider/device/DLL phases and validation scope.
+All patched renderer packages must resolve from the same checkout/revision.
 
 ## GPU preparation diagnostics
 

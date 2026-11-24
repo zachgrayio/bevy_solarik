@@ -1,11 +1,11 @@
-//! AMD FidelityFX FSR upscaling attached to the Solarik realtime compositor.
+//! AMD `FidelityFX` FSR upscaling attached to the Solarik realtime compositor.
 //!
 //! Mirrors [`super::nrd`]: one native context per view, Bevy owns scheduling, and
 //! all unsafe ABI/code lives in `solarik-fsr-wgpu`. The provider DLL is loaded
 //! lazily and is optional — when it is absent the view keeps native resolution,
 //! just like an unavailable DLSS preference in a consuming application.
 //!
-//! The default path is FSR NativeAA (1:1 temporal anti-aliasing). Scaled presets
+//! The default path is FSR `NativeAA` (1:1 temporal anti-aliasing). Scaled presets
 //! require the application to set the camera's render resolution and
 //! `TemporalJitter`/`MipBias`, the same way it drives `bevy_anti_alias::dlss`;
 //! see `docs/fsr.md`.
@@ -18,10 +18,8 @@ use bevy_render::{
     render_resource::{binding_types::*, *},
     renderer::RenderDevice,
 };
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// Per-view FSR state: the upscaled output texture and a persistent native context.
 pub(super) struct ViewFsr {
@@ -175,9 +173,9 @@ pub(super) fn upscale(
     let jitter = native_quality.suggested_jitter(frame_index, phase_count);
     let dispatch = solarik_fsr_wgpu::Dispatch {
         color,
-        depth: &**depth,
-        motion_vectors: &**motion,
-        output: &*view.output,
+        depth,
+        motion_vectors: motion,
+        output: &view.output,
         exposure: None,
         reactive: None,
         transparency_and_composition: None,
@@ -207,7 +205,7 @@ pub(super) fn upscale(
         &[
             BindGroupEntry {
                 binding: 0,
-                resource: BindingResource::TextureView(&*view.output),
+                resource: BindingResource::TextureView(&view.output),
             },
             BindGroupEntry {
                 binding: 1,

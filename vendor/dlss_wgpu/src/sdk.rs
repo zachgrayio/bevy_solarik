@@ -1,5 +1,6 @@
 use crate::{feature_info::with_feature_info, nvsdk_ngx::*};
 use std::{
+    any::Any,
     ptr,
     sync::{Arc, Mutex},
     thread,
@@ -21,9 +22,25 @@ pub struct DlssSdk {
     pub(crate) parameters: *mut NVSDK_NGX_Parameter,
     pub(crate) device: Device,
     pub(crate) backend: SdkBackend,
+    // Features retain this SDK through their ReleaseFeature call. These owners are released
+    // only after this SDK's Drop body has destroyed its parameters.
+    runtime_keepalives: Vec<Arc<dyn Any + Send + Sync>>,
 }
 
 impl DlssSdk {
+    /// Retain an application-owned native runtime until all features and SDK parameters are
+    /// destroyed. Repeated registration of the same owner is idempotent. This does not transfer
+    /// feature handles or suppress any normal NGX destructor.
+    pub fn retain_runtime(&mut self, owner: Arc<dyn Any + Send + Sync>) {
+        if !self
+            .runtime_keepalives
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, &owner))
+        {
+            self.runtime_keepalives.push(owner);
+        }
+    }
+
     /// Creates the DLSS SDK for the active wgpu backend (Vulkan or Windows D3D12).
     ///
     /// This should be done once per application.
@@ -75,6 +92,7 @@ impl DlssSdk {
                 parameters,
                 device,
                 backend: SdkBackend::Vulkan,
+                runtime_keepalives: Vec::new(),
             })));
         }
 
@@ -129,6 +147,7 @@ impl DlssSdk {
                 parameters,
                 device,
                 backend: SdkBackend::Dx12 { owns_shutdown },
+                runtime_keepalives: Vec::new(),
             })));
         }
 
@@ -184,16 +203,16 @@ impl Drop for DlssSdk {
     fn drop(&mut self) {
         match self.backend {
             SdkBackend::Vulkan => unsafe {
-                let hal_device = self.device.as_hal::<Vulkan>().unwrap();
-                hal_device
-                    .raw_device()
-                    .device_wait_idle()
-                    .expect("Failed to wait for idle device when destroying DlssSdk");
-
-                check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(self.parameters))
-                    .expect("Failed to destroy DlssSdk parameters");
-                check_ngx_result(NVSDK_NGX_VULKAN_Shutdown1(hal_device.raw_device().handle()))
-                    .expect("Failed to destroy DlssSdk");
+                // Teardown can run after the render world is gone; NGX answers
+                // "not initialized"/"feature not found" when something already released.
+                // A drop cannot report failure, so release best-effort instead of panicking.
+                if let Some(hal_device) = self.device.as_hal::<Vulkan>() {
+                    let _ = hal_device.raw_device().device_wait_idle();
+                    let _ = check_ngx_result(NVSDK_NGX_VULKAN_DestroyParameters(self.parameters));
+                    let _ = check_ngx_result(NVSDK_NGX_VULKAN_Shutdown1(
+                        hal_device.raw_device().handle(),
+                    ));
+                }
             },
             #[cfg(all(windows, feature = "dx12"))]
             SdkBackend::Dx12 { owns_shutdown } => {

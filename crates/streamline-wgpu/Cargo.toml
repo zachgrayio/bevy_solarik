@@ -1,0 +1,20 @@
+[package]
+name = "solarik-streamline-wgpu"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Dynamically loaded NVIDIA Streamline 2.14.x (DLSS-G Frame Generation + Reflex) for wgpu 30 DX12 and Vulkan"
+
+[dependencies]
+ash = "0.38"
+libloading = "0.8"
+thiserror = "2"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan"] }
+
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "dx12"] }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"

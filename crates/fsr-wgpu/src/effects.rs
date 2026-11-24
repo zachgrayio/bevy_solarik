@@ -14,7 +14,8 @@
 //! Nothing here links against an AMD binary; the runtime loader resolves the
 //! same five `FfxApi` exports with `libloading`.
 
-use crate::native::{Dimensions2D, FfxApiHeader, FloatCoords2D, Resource, StructType};
+use crate::native::StructType;
+pub use crate::native::{Dimensions2D, FfxApiHeader, FloatCoords2D, Resource};
 use std::ffi::{c_char, c_void};
 
 /// Compose an SDK version from major/minor/patch, mirroring the
@@ -555,12 +556,14 @@ pub struct CreateContextDescFrameGenerationSwapChainVk {
     pub physical_device: *mut c_void,
     /// `VkDevice` (opaque).
     pub device: *mut c_void,
-    /// `VkSwapchainKHR*` (in/out handle), opaque pointer-to-pointer.
-    pub swapchain: *mut *mut c_void,
+    /// `VkSwapchainKHR*` (in/out handle). The swapchain it names is destroyed
+    /// during creation; on return it holds the frame-generation swapchain.
+    pub swapchain: *mut u64,
     /// `VkAllocationCallbacks*` (opaque, optional).
     pub allocator: *mut c_void,
-    /// `VkSwapchainCreateInfoKHR` (opaque, modeled as a pointer).
-    pub create_info: *const c_void,
+    /// `VkSwapchainCreateInfoKHR`, held **by value** in the v2.4.0 header (104
+    /// bytes on x64), not by pointer.
+    pub create_info: ash::vk::SwapchainCreateInfoKHR<'static>,
     /// Main graphics queue (`VkQueueInfoFFXAPI`).
     pub game_queue: QueueInfoVk,
     /// Async compute queue (`VkQueueInfoFFXAPI`).
@@ -772,6 +775,117 @@ pub struct CallbackDescFrameGenerationPresent {
     pub frame_id: u64,
 }
 
+/// `FfxApiPresentCallbackFunc`: UI composition for each presented frame.
+pub type PresentCallbackFn =
+    unsafe extern "C" fn(params: *mut CallbackDescFrameGenerationPresent, user: *mut c_void) -> u32;
+
+/// `FfxApiFrameGenerationDispatchFunc`: called by the frame-generation swapchain
+/// at present time with a filled [`DispatchDescFrameGeneration`] (command list,
+/// present color and outputs owned by the swapchain).
+pub type FrameGenerationDispatchFn =
+    unsafe extern "C" fn(params: *mut DispatchDescFrameGeneration, user: *mut c_void) -> u32;
+
+/// `ffxConfigureDescFrameGeneration` (`0x00020002`), issued once per frame.
+#[repr(C)]
+pub struct ConfigureDescFrameGeneration {
+    /// Descriptor header (`desc_types::FRAMEGENERATION_CONFIGURE`).
+    pub header: FfxApiHeader,
+    /// `IDXGISwapChain*` (DX12) or `VkSwapchainKHR` (Vulkan) of the
+    /// frame-generation swapchain.
+    pub swap_chain: *mut c_void,
+    /// Optional UI composition callback; `None` selects the default copy.
+    pub present_callback: Option<PresentCallbackFn>,
+    /// User pointer for `present_callback`.
+    pub present_callback_user_context: *mut c_void,
+    /// Frame-generation dispatch callback invoked by the swapchain at present.
+    pub frame_generation_callback: Option<FrameGenerationDispatchFn>,
+    /// User pointer for `frame_generation_callback`.
+    pub frame_generation_callback_user_context: *mut c_void,
+    /// Enables frame generation for this frame.
+    pub frame_generation_enabled: bool,
+    /// Allows generation work on async compute.
+    pub allow_async_workloads: bool,
+    /// Optional HUD-less backbuffer used for UI extraction.
+    pub hudless_color: Resource,
+    /// `FfxApiDispatchFrameGenerationFlags` bits.
+    pub flags: u32,
+    /// Present only generated frames.
+    pub only_present_generated: bool,
+    /// Backbuffer area that is generated.
+    pub generation_rect: Rect2D,
+    /// Must increment by exactly one per frame.
+    pub frame_id: u64,
+}
+
+/// `ffxCreateContextDescFrameGenerationVersion` (`0x0002000e`), chained on the
+/// frame-generation create descriptor.
+#[repr(C)]
+pub struct CreateContextDescFrameGenerationVersion {
+    /// Descriptor header (`desc_types::FRAMEGENERATION_VERSION`).
+    pub header: FfxApiHeader,
+    /// Must equal [`versions::FRAMEGENERATION`].
+    pub version: u32,
+}
+
+/// `ffxCreateContextDescFrameGenerationSwapChainForHwndDX12` (`0x00030006`).
+#[repr(C)]
+pub struct CreateContextDescFrameGenerationSwapChainForHwndDx12 {
+    /// Descriptor header (`desc_types::FGSWAPCHAIN_DX12_FOR_HWND_CREATE`).
+    pub header: FfxApiHeader,
+    /// Out: `IDXGISwapChain4*` carrying one reference for the caller.
+    pub swapchain: *mut *mut c_void,
+    /// Target `HWND`.
+    pub hwnd: *mut c_void,
+    /// `DXGI_SWAP_CHAIN_DESC1*`.
+    pub desc: *mut c_void,
+    /// `DXGI_SWAP_CHAIN_FULLSCREEN_DESC*`, NULL for windowed.
+    pub fullscreen_desc: *mut c_void,
+    /// `IDXGIFactory*` used to create the real swapchain.
+    pub dxgi_factory: *mut c_void,
+    /// `ID3D12CommandQueue*` the game presents on.
+    pub game_queue: *mut c_void,
+}
+
+/// `ffxCreateContextDescFrameGenerationSwapChainVersionDX12` (`0x0003000b`),
+/// chained on the swapchain create descriptor (required for the 4.0 API).
+#[repr(C)]
+pub struct CreateContextDescFrameGenerationSwapChainVersionDx12 {
+    /// Descriptor header (`desc_types::FGSWAPCHAIN_DX12_VERSION`).
+    pub header: FfxApiHeader,
+    /// Must equal [`versions::FRAMEGENERATION_SWAPCHAIN_DX12`].
+    pub version: u32,
+}
+
+/// `FfxApiDispatchFramegenerationFlags`.
+pub mod framegeneration_dispatch_flags {
+    /// Draw tear-line bars on generated frames (`1 << 0`).
+    pub const DRAW_DEBUG_TEAR_LINES: u32 = 1 << 0;
+    /// Draw reset indicators (`1 << 1`).
+    pub const DRAW_DEBUG_RESET_INDICATORS: u32 = 1 << 1;
+    /// Output debug views (`1 << 2`).
+    pub const DRAW_DEBUG_VIEW: u32 = 1 << 2;
+    /// Draw pacing lines (`1 << 4`).
+    pub const DRAW_DEBUG_PACING_LINES: u32 = 1 << 4;
+}
+
+/// `FfxApiCreateContextFramegenerationFlags`.
+pub mod framegeneration_create_flags {
+    /// Async compute workload support (`1 << 0`).
+    pub const ENABLE_ASYNC_WORKLOAD_SUPPORT: u32 = 1 << 0;
+    /// Motion vectors are at display resolution (`1 << 1`).
+    pub const ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS: u32 = 1 << 1;
+    /// Motion vectors include the jitter pattern (`1 << 2`).
+    pub const ENABLE_MOTION_VECTORS_JITTER_CANCELLATION: u32 = 1 << 2;
+    /// Depth is inverted `[1..0]` (`1 << 3`).
+    pub const ENABLE_DEPTH_INVERTED: u32 = 1 << 3;
+    /// Depth uses an infinite far plane (`1 << 4`).
+    pub const ENABLE_DEPTH_INFINITE: u32 = 1 << 4;
+    /// Input color is HDR (`1 << 5`).
+    pub const ENABLE_HIGH_DYNAMIC_RANGE: u32 = 1 << 5;
+    /// Runtime API value checking (`1 << 6`).
+    pub const ENABLE_DEBUG_CHECKING: u32 = 1 << 6;
+}
+
 // ---------------------------------------------------------------------------
 // Denoiser `pNext`-chained per-signal dispatch descriptors, `ffx_denoiser.h`.
 // ---------------------------------------------------------------------------
@@ -885,7 +999,22 @@ const _: () = assert!(size_of::<OverrideVersion>() == 24);
 // Measured with the MSVC C++ `sizeof` probe (see the report / `src/abi.h`).
 // Opaque Vulkan handles and function pointers are all 8-byte `void*`.
 const _: () = assert!(size_of::<QueueInfoVk>() == 24);
-const _: () = assert!(size_of::<CreateContextDescFrameGenerationSwapChainVk>() == 152);
+// `VkSwapchainCreateInfoKHR` is embedded by value (104 bytes): 48 + 104 + 4 * 24.
+const _: () = assert!(size_of::<ash::vk::SwapchainCreateInfoKHR<'static>>() == 104);
+const _: () = assert!(size_of::<CreateContextDescFrameGenerationSwapChainVk>() == 248);
+const _: () =
+    assert!(std::mem::offset_of!(CreateContextDescFrameGenerationSwapChainVk, game_queue) == 152);
+// Frame-generation configure / DX12 swapchain descriptors (x64, v2.4.0 headers).
+const _: () = assert!(size_of::<ConfigureDescFrameGeneration>() == 144);
+const _: () = assert!(std::mem::offset_of!(ConfigureDescFrameGeneration, hudless_color) == 64);
+const _: () = assert!(std::mem::offset_of!(ConfigureDescFrameGeneration, flags) == 112);
+const _: () = assert!(std::mem::offset_of!(ConfigureDescFrameGeneration, generation_rect) == 120);
+const _: () = assert!(std::mem::offset_of!(ConfigureDescFrameGeneration, frame_id) == 136);
+const _: () = assert!(size_of::<CreateContextDescFrameGenerationVersion>() == 24);
+const _: () = assert!(size_of::<CreateContextDescFrameGenerationSwapChainForHwndDx12>() == 64);
+const _: () = assert!(size_of::<CreateContextDescFrameGenerationSwapChainVersionDx12>() == 24);
+const _: () =
+    assert!(std::mem::offset_of!(DispatchDescFrameGenerationPrepareV2, camera_position) == 184);
 const _: () = assert!(size_of::<QueryDescSwapchainReplacementFunctionsVk>() == 72);
 const _: () = assert!(size_of::<ConfigureDescFrameGenerationSwapChainRegisterUiResourceVk>() == 72);
 const _: () =
@@ -913,7 +1042,7 @@ const _: () = assert!(size_of::<DispatchDescDenoiserSpecularOcclusion>() == 120)
     reason = "the in-process stub provider must use the exact unsafe FfxApi C ABI signatures"
 )]
 mod tests {
-    //! CPU-only checks: constants match the SDK macros and the FfxApi stub
+    //! CPU-only checks: constants match the SDK macros and the `FfxApi` stub
     //! chain accepts the new 2.4.0 descriptors. No DLL, GPU or window is used.
 
     use super::*;
@@ -1235,7 +1364,7 @@ mod tests {
             device: std::ptr::null_mut(),
             swapchain: std::ptr::null_mut(),
             allocator: std::ptr::null_mut(),
-            create_info: std::ptr::null(),
+            create_info: ash::vk::SwapchainCreateInfoKHR::default(),
             game_queue: QueueInfoVk::default(),
             async_compute_queue: QueueInfoVk::default(),
             present_queue: QueueInfoVk::default(),
