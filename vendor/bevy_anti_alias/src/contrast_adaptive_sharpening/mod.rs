@@ -1,14 +1,15 @@
 use crate::{fxaa::fxaa, smaa::smaa};
 use bevy_app::prelude::*;
-use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer};
+use bevy_asset::{AssetServer, embedded_asset, load_embedded_asset};
 use bevy_camera::Camera;
 use bevy_core_pipeline::{
-    schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems},
     FullscreenShader,
+    schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems},
 };
 use bevy_ecs::{prelude::*, query::QueryItem};
-use bevy_reflect::{std_traits::ReflectDefault, Reflect};
+use bevy_reflect::{Reflect, std_traits::ReflectDefault};
 use bevy_render::{
+    Render, RenderApp, RenderStartup, RenderSystems,
     extract_component::{ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin},
     render_resource::{
         binding_types::{sampler, texture_2d, uniform_buffer},
@@ -17,7 +18,6 @@ use bevy_render::{
     renderer::RenderDevice,
     sync_component::SyncComponent,
     view::ExtractedView,
-    Render, RenderApp, RenderStartup, RenderSystems,
 };
 
 mod node;

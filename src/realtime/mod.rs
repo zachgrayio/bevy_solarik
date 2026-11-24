@@ -104,7 +104,7 @@ impl SolariQuality {
     }
 }
 
-/// AMD FidelityFX FSR quality preset, the engine-facing equivalent of
+/// AMD `FidelityFX` FSR quality preset, the engine-facing equivalent of
 /// `bevy_anti_alias::dlss::DlssPerfQualityMode`. It drives the camera's render
 /// resolution, `TemporalJitter` and `MipBias`; see `docs/fsr.md`.
 #[cfg(feature = "fsr")]
@@ -176,6 +176,8 @@ impl Plugin for SolarikLightingPlugin {
         embedded_asset!(app, "nrd.wesl");
         #[cfg(feature = "fsr")]
         embedded_asset!(app, "fsr.wesl");
+        #[cfg(all(feature = "fsr", feature = "nrd"))]
+        embedded_asset!(app, "fsr_rr.wesl");
 
         load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
 
@@ -209,6 +211,11 @@ impl Plugin for SolarikLightingPlugin {
         render_app
             .init_resource::<fsr_effects::FsrSolariEffects>()
             .add_systems(RenderStartup, fsr::init_fsr);
+        // FSR Ray Regeneration denoises Solari's split signals where NRD cannot run.
+        #[cfg(all(feature = "fsr", feature = "nrd"))]
+        if is_dx12 {
+            render_app.add_systems(RenderStartup, fsr_effects::init_pipelines);
+        }
 
         render_app
             .init_resource::<PrimaryGlassViews>()

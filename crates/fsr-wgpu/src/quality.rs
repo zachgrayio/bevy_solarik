@@ -8,7 +8,7 @@
 /// `Kits/FidelityFX/upscalers/include/ffx_upscale.h`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum QualityMode {
-    /// 1.0x per dimension: temporal anti-aliasing at native resolution (FSR "NativeAA").
+    /// 1.0x per dimension: temporal anti-aliasing at native resolution (FSR "`NativeAA`").
     NativeAA = 0,
     /// 1.5x per dimension.
     Quality = 1,
@@ -66,7 +66,7 @@ impl QualityMode {
 
     /// Number of jitter phases for the given render/display width pair, used when
     /// the provider's `ffxQuery` answer is unavailable. FSR uses 8 phases for a
-    /// 2x upscale and grows quadratically from there; NativeAA keeps 8.
+    /// 2x upscale and grows quadratically from there; `NativeAA` keeps 8.
     pub fn jitter_phase_count(self, display_width: u32) -> u32 {
         let render_width = self.render_resolution([display_width, 1])[0].max(1);
         let ratio = display_width.max(1) as f32 / render_width as f32;
@@ -86,7 +86,7 @@ fn halton(mut index: u32, base: u32) -> f32 {
     result
 }
 
-/// FfxApi create-context flags, from `FfxApiCreateContextUpscaleFlags`.
+/// `FfxApi` create-context flags, from `FfxApiCreateContextUpscaleFlags`.
 pub mod flags {
     /// Input color is high-dynamic-range linear (typical for HDR render targets).
     pub const HIGH_DYNAMIC_RANGE: u32 = 1 << 0;
@@ -110,7 +110,7 @@ pub mod flags {
     pub const DEBUG_VISUALIZATION: u32 = 1 << 9;
 }
 
-/// FfxApi dispatch flags, from `FfxApiDispatchFsrUpscaleFlags`.
+/// `FfxApi` dispatch flags, from `FfxApiDispatchFsrUpscaleFlags`.
 pub mod dispatch_flags {
     /// Write debug views into the output resource.
     pub const DRAW_DEBUG_VIEW: u32 = 1 << 0;
@@ -120,7 +120,7 @@ pub mod dispatch_flags {
     pub const NON_LINEAR_COLOR_PQ: u32 = 1 << 2;
 }
 
-/// FfxApi resource states, from `FfxApiResourceState`.
+/// `FfxApi` resource states, from `FfxApiResourceState`.
 pub mod states {
     /// Resource is in `COMPUTE_READ` state (the upscaler reads it).
     pub const COMPUTE_READ: u32 = 1 << 2;
@@ -130,7 +130,7 @@ pub mod states {
     pub const PIXEL_COMPUTE_READ: u32 = (1 << 2) | (1 << 3);
 }
 
-/// FfxApi resource usage, from `FfxApiResourceUsage`.
+/// `FfxApi` resource usage, from `FfxApiResourceUsage`.
 pub mod usage {
     /// Read-only resource.
     pub const READ_ONLY: u32 = 0;
@@ -144,7 +144,7 @@ pub mod usage {
     pub const STENCIL_TARGET: u32 = 1 << 5;
 }
 
-/// FfxApi surface formats, from `FfxApiSurfaceFormat` in `ffx_api_types.h`.
+/// `FfxApi` surface formats, from `FfxApiSurfaceFormat` in `ffx_api_types.h`.
 /// Values are sequential enum ordinals; keep them in sync with the pinned header.
 pub mod formats {
     /// Unknown/untyped.
@@ -157,8 +157,16 @@ pub mod formats {
     pub const R32G32_FLOAT: u32 = 6;
     /// `R8G8B8A8_UNORM`.
     pub const R8G8B8A8_UNORM: u32 = 10;
+    /// `R8G8B8A8_SRGB`.
+    pub const R8G8B8A8_SRGB: u32 = 12;
+    /// `B8G8R8A8_UNORM` (DXGI swapchain storage; wgpu renders through sRGB views).
+    pub const B8G8R8A8_UNORM: u32 = 14;
+    /// `B8G8R8A8_SRGB`.
+    pub const B8G8R8A8_SRGB: u32 = 15;
     /// `R11G11B10_FLOAT`.
     pub const R11G11B10_FLOAT: u32 = 16;
+    /// `R10G10B10A2_UNORM`.
+    pub const R10G10B10A2_UNORM: u32 = 17;
     /// `R16G16_FLOAT`.
     pub const R16G16_FLOAT: u32 = 18;
     /// `R16_FLOAT`.
@@ -169,13 +177,13 @@ pub mod formats {
     pub const R32_FLOAT: u32 = 28;
 }
 
-/// FfxApi resource types, from `FfxApiResourceType`.
+/// `FfxApi` resource types, from `FfxApiResourceType`.
 pub mod resource_types {
     /// A 2D texture.
     pub const TEXTURE_2D: u32 = 2;
 }
 
-/// Map a `wgpu::TextureFormat` to a FfxApi surface format. Returns
+/// Map a `wgpu::TextureFormat` to a `FfxApi` surface format. Returns
 /// [`formats::UNKNOWN`] for formats FSR does not accept.
 pub fn surface_format(format: wgpu::TextureFormat) -> u32 {
     use wgpu::TextureFormat as F;
@@ -184,6 +192,8 @@ pub fn surface_format(format: wgpu::TextureFormat) -> u32 {
         F::Rgba16Float => formats::R16G16B16A16_FLOAT,
         F::Rg32Float => formats::R32G32_FLOAT,
         F::Rgba8Unorm | F::Rgba8UnormSrgb => formats::R8G8B8A8_UNORM,
+        F::Bgra8Unorm | F::Bgra8UnormSrgb => formats::B8G8R8A8_UNORM,
+        F::Rgb10a2Unorm => formats::R10G10B10A2_UNORM,
         F::Rg11b10Ufloat => formats::R11G11B10_FLOAT,
         F::Rg16Float => formats::R16G16_FLOAT,
         F::R16Float => formats::R16_FLOAT,
@@ -193,7 +203,7 @@ pub fn surface_format(format: wgpu::TextureFormat) -> u32 {
     }
 }
 
-/// FfxApi struct-type constants. Kept here so the ABI tests can assert them.
+/// `FfxApi` struct-type constants. Kept here so the ABI tests can assert them.
 pub const fn effect_sub_id(effect: u32, sub: u32) -> u64 {
     const EFFECT_MASK: u64 = 0x00ff_0000;
     ((effect as u64) & EFFECT_MASK) | ((sub as u64) & !EFFECT_MASK)

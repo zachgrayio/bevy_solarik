@@ -476,6 +476,7 @@ pub fn install_swapchain_interception() {
                 on_swapchain_created: Some(dx12_upgrade_swapchain),
                 on_present_start: Some(on_present_start),
                 on_present_end: Some(on_present_end),
+                ..Default::default()
             });
             tracing::info!("Streamline DX12 swapchain/present interception hooks installed");
         }

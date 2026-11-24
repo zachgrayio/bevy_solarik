@@ -1,4 +1,4 @@
-//! wgpu 30 → raw D3D12 handle conversion for the FidelityFX DX12 provider.
+//! wgpu 30 → raw D3D12 handle conversion for the `FidelityFX` DX12 provider.
 //!
 //! Mirrors [`crate::vulkan`]: extracts raw `ID3D12Device*`, `ID3D12Resource*`
 //! and `ID3D12GraphicsCommandList*` pointers via wgpu-hal's `as_hal::<Dx12>()`

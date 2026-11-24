@@ -1,4 +1,4 @@
-//! Deploy the optional AMD FidelityFX FSR runtime modules next to the built
+//! Deploy the optional AMD `FidelityFX` FSR runtime modules next to the built
 //! binaries, following the native-artifact convention used by consuming
 //! applications (pinned per-target modules, Git LFS and idempotent deployment).
 //!
@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Pinned FidelityFX SDK 2.4.0 provider modules per target. The SDK ships a
+/// Pinned `FidelityFX` SDK 2.4.0 provider modules per target. The SDK ships a
 /// small loader plus per-effect DLLs; the loader resolves effect DLLs next to
 /// itself (and beside the exe), so all eight Windows modules are deployed.
 /// Vulkan and DX12 sets are both listed because the backend is chosen at
@@ -68,16 +68,16 @@ fn deploy(source: &Path, destination: &Path) -> bool {
     if !artifact(source) {
         return false;
     }
-    if destination.is_file() {
-        if let (Ok(mut a), Ok(mut b)) = (fs::File::open(source), fs::File::open(destination)) {
-            let mut left = blake3::Hasher::new();
-            let mut right = blake3::Hasher::new();
-            if left.update_reader(&mut a).is_ok()
-                && right.update_reader(&mut b).is_ok()
-                && left.finalize() == right.finalize()
-            {
-                return true;
-            }
+    if destination.is_file()
+        && let (Ok(mut a), Ok(mut b)) = (fs::File::open(source), fs::File::open(destination))
+    {
+        let mut left = blake3::Hasher::new();
+        let mut right = blake3::Hasher::new();
+        if left.update_reader(&mut a).is_ok()
+            && right.update_reader(&mut b).is_ok()
+            && left.finalize() == right.finalize()
+        {
+            return true;
         }
     }
     match fs::copy(source, destination) {

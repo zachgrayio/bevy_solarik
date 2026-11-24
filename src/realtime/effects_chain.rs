@@ -1,4 +1,4 @@
-//! CPU-side dispatch **chaining plan** for the extra FidelityFX SDK 2.4.0
+//! CPU-side dispatch **chaining plan** for the extra `FidelityFX` SDK 2.4.0
 //! effects in `crates/fsr-wgpu/src/effects.rs`.
 //!
 //! The realtime render node (`node.rs` / `fsr.rs`) already dispatches the FSR
@@ -72,10 +72,10 @@ pub enum FfxBackend {
 /// and calls [`resolve_and_validate`] at startup — this crate only provides the
 /// decision layer, not the GPU dispatch.
 ///
-/// Each flag maps to one fork Cargo feature and one Definition-of-Done (DoD)
+/// Each flag maps to one fork Cargo feature and one Definition-of-Done (`DoD`)
 /// quadrant from the hybrid-renderer plan (decision D21):
 ///
-/// | field | fork Cargo feature | DoD quadrant |
+/// | field | fork Cargo feature | `DoD` quadrant |
 /// |-------|--------------------|--------------|
 /// | [`Self::ray_regeneration`] | `fsr_ray_regeneration` | DX12 + RX 9000+ (AMD-only) |
 /// | [`Self::radiance_cache`] | `fsr_radiance_cache` | DX12 + RX 9000+ (AMD-only) |
@@ -96,7 +96,7 @@ pub struct FsrEffectChainConfig {
     /// (`fsr_radiance_cache`; DX12 + RX 9000+ only).
     pub radiance_cache: bool,
     /// Enable FSR frame generation after the upscaler (`fsr_frame_generation`;
-    /// all four DoD quadrants per D21).
+    /// all four `DoD` quadrants per D21).
     pub frame_generation: bool,
     /// Opt into the FG swapchain path (`fsr_frame_generation`; DX12 wrap
     /// descriptors or FG Swapchain VK descriptors). Requires `frame_generation`.
@@ -217,7 +217,7 @@ pub fn denoiser_signal_chain() -> DescriptorChain {
     DescriptorChain::link(kinds)
 }
 
-/// One node in a CPU model of an FfxApi `pNext` descriptor chain.
+/// One node in a CPU model of an `FfxApi` `pNext` descriptor chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DescriptorNode {
     /// FFX 2.4.0 descriptor-type discriminator (see [`desc_types`]).
@@ -421,10 +421,10 @@ pub fn validate_chain(plan: &EffectChainPlan) -> Result<(), ChainError> {
     }
 
     // 4. Radiance cache never after upscale.
-    if let (Some(radiance), Some(upscale)) = (pos(EffectStep::RadianceCache), upscale_pos) {
-        if radiance > upscale {
-            return Err(ChainError::RadianceCacheAfterUpscale);
-        }
+    if let (Some(radiance), Some(upscale)) = (pos(EffectStep::RadianceCache), upscale_pos)
+        && radiance > upscale
+    {
+        return Err(ChainError::RadianceCacheAfterUpscale);
     }
 
     // 5. Swapchain FG never before FG (and requires FG to exist).

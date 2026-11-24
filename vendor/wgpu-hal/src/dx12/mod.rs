@@ -1017,17 +1017,48 @@ pub struct Dx12SwapchainHooks {
     /// upgraded proxy `IDXGISwapChain3*` (also with 1 COM ref). Returning
     /// `None` keeps the original pointer unchanged.
     pub on_swapchain_created: Option<unsafe fn(*mut ffi::c_void) -> Option<*mut ffi::c_void>>,
+    /// Replaces `IDXGIFactory2::CreateSwapChainForHwnd` for window surfaces, so a
+    /// provider can own the swapchain from the start (AMD FFX
+    /// `ffxCreateContextDescFrameGenerationSwapChainForHwndDX12`). Returns an
+    /// `IDXGISwapChain1`-compatible pointer carrying 1 COM ref for wgpu, or
+    /// `None` to fall back to the plain DXGI swapchain.
+    pub create_swapchain_for_hwnd:
+        Option<unsafe fn(&Dx12SwapchainCreateRequest) -> Option<*mut ffi::c_void>>,
     /// Invoked immediately before `IDXGISwapChain3::Present`.
     pub on_present_start: Option<fn()>,
     /// Invoked immediately after `IDXGISwapChain3::Present`.
     pub on_present_end: Option<fn()>,
+    /// Invoked after `Present` with `IDXGISwapChain::GetLastPresentCount`, which
+    /// counts every present the swapchain issued (generated frames included when a
+    /// frame-generation proxy owns it).
+    pub on_presented: Option<fn(u32)>,
+}
+
+/// Raw inputs for [`Dx12SwapchainHooks::create_swapchain_for_hwnd`]. Every
+/// pointer borrows wgpu-owned objects for the duration of the call only.
+pub struct Dx12SwapchainCreateRequest {
+    /// `IDXGIFactory*` (the surface's `IDXGIFactory4`).
+    pub factory: *mut ffi::c_void,
+    /// `ID3D12CommandQueue*` the swapchain presents on.
+    pub queue: *mut ffi::c_void,
+    /// Target `HWND`.
+    pub hwnd: *mut ffi::c_void,
+    /// `DXGI_SWAP_CHAIN_DESC1*` wgpu would create; the hook may read or modify it.
+    pub desc: *mut ffi::c_void,
 }
 
 static DX12_SWAPCHAIN_HOOKS: RwLock<Dx12SwapchainHooks> = RwLock::new(Dx12SwapchainHooks {
     on_swapchain_created: None,
+    create_swapchain_for_hwnd: None,
     on_present_start: None,
     on_present_end: None,
+    on_presented: None,
 });
+
+/// The currently registered hooks (a copy; registration replaces the whole set).
+pub fn swapchain_hooks() -> Dx12SwapchainHooks {
+    *DX12_SWAPCHAIN_HOOKS.read()
+}
 
 /// Register DX12 swapchain/present interception hooks (e.g. Streamline DLSS-G).
 pub fn set_swapchain_hooks(hooks: Dx12SwapchainHooks) {
@@ -1608,15 +1639,38 @@ impl crate::Surface for Surface {
                         }
                     }
                     SurfaceTarget::WndHandle(hwnd) => {
-                        profiling::scope!("IDXGIFactory2::CreateSwapChainForHwnd");
-                        unsafe {
-                            self.factory.CreateSwapChainForHwnd(
-                                &device.present_queue,
-                                hwnd,
-                                &desc,
-                                None,
-                                None,
-                            )
+                        // Copy the hook out so no lock is held while it runs.
+                        let create_hook = DX12_SWAPCHAIN_HOOKS.read().create_swapchain_for_hwnd;
+                        let provided = create_hook.and_then(|create| {
+                            profiling::scope!("Dx12SwapchainHooks::create_swapchain_for_hwnd");
+                            let mut provider_desc = desc;
+                            let request = Dx12SwapchainCreateRequest {
+                                factory: self.factory.as_raw(),
+                                queue: device.present_queue.as_raw(),
+                                hwnd: hwnd.0,
+                                desc: core::ptr::from_mut(&mut provider_desc).cast(),
+                            };
+                            // SAFETY: every pointer in `request` borrows a live
+                            // wgpu object for this call; a returned pointer carries
+                            // one COM reference to an `IDXGISwapChain1`-derived object.
+                            unsafe { create(&request) }
+                                .filter(|raw| !raw.is_null())
+                                .map(|raw| unsafe { Dxgi::IDXGISwapChain1::from_raw(raw) })
+                        });
+                        match provided {
+                            Some(swap_chain) => Ok(swap_chain),
+                            None => {
+                                profiling::scope!("IDXGIFactory2::CreateSwapChainForHwnd");
+                                unsafe {
+                                    self.factory.CreateSwapChainForHwnd(
+                                        &device.present_queue,
+                                        hwnd,
+                                        &desc,
+                                        None,
+                                        None,
+                                    )
+                                }
+                            }
                         }
                     }
                 };
@@ -1892,6 +1946,11 @@ impl crate::Queue for Queue {
         let present_res = unsafe { sc.raw.Present(interval, flags) };
         if let Some(after) = hooks.on_present_end {
             after();
+        }
+        if let Some(presented) = hooks.on_presented {
+            if let Ok(count) = unsafe { sc.raw.GetLastPresentCount() } {
+                presented(count);
+            }
         }
         present_res.ok().into_device_result("Present")?;
 
