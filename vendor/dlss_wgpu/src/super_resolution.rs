@@ -183,9 +183,7 @@ impl DlssSuperResolution {
                 InMVScaleY: render_parameters.motion_vector_scale.unwrap_or([1.0, 1.0])[1],
                 pInTransparencyMask: z,
                 pInExposureTexture: exposure_ptr,
-                pInBiasCurrentColorMask: render_parameters
-                    .bias
-                    .map_or(z, texture_to_d3d12),
+                pInBiasCurrentColorMask: render_parameters.bias.map_or(z, texture_to_d3d12),
                 InColorSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
                 InDepthSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
                 InMVSubrectBase: NVSDK_NGX_Coordinates { X: 0, Y: 0 },
@@ -368,6 +366,9 @@ impl Drop for DlssSuperResolution {
             #[cfg(all(windows, feature = "dx12"))]
             crate::sdk::SdkBackend::Dx12 { .. } => {
                 let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                // Poll outside the SDK lock to avoid reentrant deferred-drop deadlocks;
+                // serialize the native API itself with creation/evaluation and RR release.
+                let _sdk = self.sdk.lock().unwrap();
                 unsafe {
                     let _ = check_ngx_result(NVSDK_NGX_D3D12_ReleaseFeature(self.feature));
                 }

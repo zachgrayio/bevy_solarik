@@ -119,6 +119,7 @@ pub struct Streamline {
     last_mode: u32,
     last_num_frames: u32,
     is_dx12: bool,
+    native_shutdown: bool,
     // Keep wide-string paths / project id alive for slInit lifetime.
     _plugin_dir_wide: Vec<u16>,
     _project_id_c: CString,
@@ -435,6 +436,7 @@ pub fn attach_device(
         last_mode: DLSSG_MODE_OFF,
         last_num_frames: 0,
         is_dx12,
+        native_shutdown: false,
         _plugin_dir_wide: plugin_dir_wide,
         _project_id_c: project_id_c,
     };
@@ -450,13 +452,37 @@ pub fn attach_device(
 /// Clear `wgpu-hal` swapchain hooks and call `slShutdown()` cleanly before the
 /// GPU device is destroyed at application exit.
 pub fn shutdown() {
+    drop(shutdown_retaining_runtime());
+}
+
+/// Native shutdown with the interposer/plugin DLL owner retained. Drop the returned value only
+/// after all queue/device/swapchain objects that can call provider code have been destroyed.
+pub fn shutdown_retaining_runtime() -> Option<RetiredRuntime> {
     #[cfg(windows)]
     wgpu::hal::dx12::set_swapchain_hooks(wgpu::hal::dx12::Dx12SwapchainHooks::default());
     wgpu::hal::vulkan::set_swapchain_interceptor(
         wgpu::hal::vulkan::VulkanSwapchainInterceptor::default(),
     );
-    if let Ok(mut guard) = global_slot().lock() {
-        let _ = guard.take();
+    let mut runtime = global_slot().lock().unwrap().take()?;
+    let plugins = runtime.retain_loaded_plugins();
+    runtime.shutdown_native();
+    Some(RetiredRuntime {
+        runtime: Some(runtime),
+        plugins,
+    })
+}
+
+/// Shutting down SL can release its own module references. This owner additionally retains
+/// already-loaded plugin DLLs and the interposer until the final device/queue teardown.
+pub struct RetiredRuntime {
+    runtime: Option<Streamline>,
+    plugins: Vec<libloading::Library>,
+}
+impl Drop for RetiredRuntime {
+    fn drop(&mut self) {
+        // Plugin DLL detach runs while the interposer is still loaded.
+        self.plugins.clear();
+        drop(self.runtime.take());
     }
 }
 
@@ -787,11 +813,57 @@ fn extract_cmd_ptr(is_dx12: bool, cmd_buffer: Option<&mut wgpu::CommandEncoder>)
     }
 }
 
-impl Drop for Streamline {
-    fn drop(&mut self) {
+impl Streamline {
+    fn retain_loaded_plugins(&self) -> Vec<libloading::Library> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let length = self
+                ._plugin_dir_wide
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self._plugin_dir_wide.len());
+            let directory = PathBuf::from(std::ffi::OsString::from_wide(
+                &self._plugin_dir_wide[..length],
+            ));
+            let mut retained = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(directory) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    if name.starts_with("sl.") && name.ends_with(".dll") {
+                        // This only AddRefs an existing module; it never initializes a new
+                        // provider, changes enabled features, or permanently pins a DLL.
+                        if let Ok(library) =
+                            libloading::os::windows::Library::open_already_loaded(entry.path())
+                        {
+                            retained.push(library.into());
+                        }
+                    }
+                }
+            }
+            retained
+        }
+        #[cfg(not(windows))]
+        {
+            Vec::new()
+        }
+    }
+
+    fn shutdown_native(&mut self) {
+        if self.native_shutdown {
+            return;
+        }
+        self.native_shutdown = true;
+        // SAFETY: final owner has stopped producers and waited for submitted GPU work; the
+        // runtime and its export library remain alive for this native shutdown invocation.
         unsafe {
             let _ = (self.core.sl_shutdown)();
         }
+    }
+}
+impl Drop for Streamline {
+    fn drop(&mut self) {
+        self.shutdown_native();
     }
 }
 

@@ -132,7 +132,17 @@ impl Plugin for FrameGenerationPlugin {
 
         app.insert_resource(caps);
         #[cfg(feature = "dlss_frame_generation")]
-        app.insert_resource(StreamlineShutdownGuard);
+        {
+            #[cfg(all(windows, feature = "dx12_ngx_init"))]
+            let retained = crate::graphics_session::retain(app);
+            #[cfg(not(all(windows, feature = "dx12_ngx_init")))]
+            let retained = false;
+            // D3D12 shared NGX ownership is carried by the outer runner + SDK leases,
+            // never by a main-world guard which can disappear before RenderApp.
+            if !retained {
+                app.insert_resource(StreamlineShutdownGuard);
+            }
+        }
         app.sub_app_mut(RenderApp)
             .insert_resource(caps)
             .add_systems(

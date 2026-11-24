@@ -14,6 +14,7 @@ pub mod abi;
 mod runtime;
 
 pub use runtime::{
-    Error, FrameGenCapabilities, FrameGenState, Streamline, attach_device, current_capabilities,
-    install_swapchain_interception, is_ready, record_frame, shutdown,
+    Error, FrameGenCapabilities, FrameGenState, RetiredRuntime, Streamline, attach_device,
+    current_capabilities, install_swapchain_interception, is_ready, record_frame, shutdown,
+    shutdown_retaining_runtime,
 };

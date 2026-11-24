@@ -529,6 +529,9 @@ impl Drop for DlssRayReconstruction {
             #[cfg(all(windows, feature = "dx12"))]
             crate::sdk::SdkBackend::Dx12 { .. } => {
                 let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                // Native NGX calls are not thread safe. Keep GPU polling outside this
+                // lock, but serialize release with every other client of the SDK.
+                let _sdk = self.sdk.lock().unwrap();
                 unsafe {
                     let _ = check_ngx_result(NVSDK_NGX_D3D12_ReleaseFeature(self.feature));
                 }

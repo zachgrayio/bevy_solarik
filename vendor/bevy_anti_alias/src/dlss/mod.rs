@@ -28,25 +28,26 @@ use bevy_core_pipeline::{
 };
 use bevy_ecs::prelude::*;
 use bevy_math::{UVec2, Vec2};
-use bevy_reflect::{reflect_remote, Reflect};
+use bevy_reflect::{Reflect, reflect_remote};
 use bevy_render::{
+    ExtractSchedule, Render, RenderApp, RenderSystems,
     camera::{MipBias, TemporalJitter},
     renderer::{
-        raw_vulkan_init::{AdditionalVulkanFeatures, RawVulkanInitSettings},
         RenderDevice, RenderQueue,
+        raw_vulkan_init::{AdditionalVulkanFeatures, RawVulkanInitSettings},
     },
     texture::CachedTexture,
     view::prepare_view_targets,
-    ExtractSchedule, Render, RenderApp, RenderSystems,
 };
 use dlss_wgpu::{
+    FeatureSupport,
     ray_reconstruction::{
         DlssRayReconstruction, DlssRayReconstructionDepthMode, DlssRayReconstructionRoughnessMode,
     },
     super_resolution::DlssSuperResolution,
-    FeatureSupport,
 };
 use std::{
+    any::Any,
     marker::PhantomData,
     ops::Deref,
     sync::{Arc, Mutex},
@@ -171,6 +172,13 @@ impl Plugin for DlssPlugin {
             info!("DLSS is not supported on this system");
             return;
         };
+
+        if let Some(owners) = app.world().get_resource::<DlssRuntimeKeepalives>() {
+            let mut sdk = dlss_sdk.lock().unwrap();
+            for owner in &owners.0 {
+                sdk.retain_runtime(Arc::clone(owner));
+            }
+        }
 
         let ray_reconstruction_supported = if is_vulkan {
             vk_rr_supported
@@ -389,6 +397,35 @@ enum DlssPerfQualityModeRemoteReflect {
     Balanced,
     Performance,
     UltraPerformance,
+}
+
+#[derive(Resource, Default)]
+struct DlssRuntimeKeepalives(Vec<Arc<dyn Any + Send + Sync>>);
+
+impl DlssRuntimeKeepalives {
+    fn retain(&mut self, owner: Arc<dyn Any + Send + Sync>) {
+        if !self.0.iter().any(|retained| Arc::ptr_eq(retained, &owner)) {
+            self.0.push(owner);
+        }
+    }
+}
+
+/// Keep an external native runtime alive through every SR/RR feature release and parameter
+/// destructor. Registration works before or after this plugin's `finish`, and neither world
+/// owns a strong SDK reference that could cycle back through the retained runtime.
+pub fn retain_dlss_runtime(app: &mut App, owner: Arc<dyn Any + Send + Sync>) {
+    app.world_mut()
+        .get_resource_or_init::<DlssRuntimeKeepalives>()
+        .retain(Arc::clone(&owner));
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        if let Some(sdk) = render_app.world().get_resource::<DlssSdk>() {
+            sdk.0.lock().unwrap().retain_runtime(Arc::clone(&owner));
+        }
+        render_app
+            .world_mut()
+            .get_resource_or_init::<DlssRuntimeKeepalives>()
+            .retain(owner);
+    }
 }
 
 #[derive(Resource)]

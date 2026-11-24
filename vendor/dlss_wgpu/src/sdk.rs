@@ -1,5 +1,6 @@
 use crate::{feature_info::with_feature_info, nvsdk_ngx::*};
 use std::{
+    any::Any,
     ptr,
     sync::{Arc, Mutex},
     thread,
@@ -21,9 +22,25 @@ pub struct DlssSdk {
     pub(crate) parameters: *mut NVSDK_NGX_Parameter,
     pub(crate) device: Device,
     pub(crate) backend: SdkBackend,
+    // Features retain this SDK through their ReleaseFeature call. These owners are released
+    // only after this SDK's Drop body has destroyed its parameters.
+    runtime_keepalives: Vec<Arc<dyn Any + Send + Sync>>,
 }
 
 impl DlssSdk {
+    /// Retain an application-owned native runtime until all features and SDK parameters are
+    /// destroyed. Repeated registration of the same owner is idempotent. This does not transfer
+    /// feature handles or suppress any normal NGX destructor.
+    pub fn retain_runtime(&mut self, owner: Arc<dyn Any + Send + Sync>) {
+        if !self
+            .runtime_keepalives
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, &owner))
+        {
+            self.runtime_keepalives.push(owner);
+        }
+    }
+
     /// Creates the DLSS SDK for the active wgpu backend (Vulkan or Windows D3D12).
     ///
     /// This should be done once per application.
@@ -75,6 +92,7 @@ impl DlssSdk {
                 parameters,
                 device,
                 backend: SdkBackend::Vulkan,
+                runtime_keepalives: Vec::new(),
             })));
         }
 
@@ -129,6 +147,7 @@ impl DlssSdk {
                 parameters,
                 device,
                 backend: SdkBackend::Dx12 { owns_shutdown },
+                runtime_keepalives: Vec::new(),
             })));
         }
 
