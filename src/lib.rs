@@ -31,6 +31,8 @@ pub mod frame_generation;
 #[cfg(feature = "fsr_device_init")]
 pub mod fsr_device_init;
 pub mod gaussian;
+mod graphics_session;
+pub use graphics_session::run_app;
 pub mod lommel;
 pub mod material;
 pub mod optics;

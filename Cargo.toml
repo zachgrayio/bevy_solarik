@@ -55,7 +55,7 @@ dlss_frame_generation = ["dep:solarik-streamline-wgpu"]
 # Initialize NGX D3D12 at device creation for the DX12 backend (DLSS / DLSS RR).
 # Registers a RawDx12InitSettings callback that bevy_render now dispatches. The
 # application supplies its NGX project id at configure() time; capability-safe.
-dx12_ngx_init = ["dep:dlss_wgpu", "dep:uuid"]
+dx12_ngx_init = ["dep:dlss_wgpu", "dep:uuid", "dep:libloading", "bevy_anti_alias/dlss"]
 
 [patch.crates-io]
 naga = { path = "vendor/naga" }
@@ -80,7 +80,8 @@ solarik-fsr-wgpu = { path = "crates/fsr-wgpu", optional = true }
 solarik-streamline-wgpu = { path = "crates/streamline-wgpu", optional = true }
 dlss_wgpu = { version = "6.0.0", optional = true, features = ["dx12"] }
 uuid = { version = "1", optional = true }
-bevy_anti_alias = "0.20.0"
+libloading = { version = "0.8", optional = true }
+bevy_anti_alias = { version = "0.20.1", path = "vendor/bevy_anti_alias" }
 bevy_app = "0.20.0"
 bevy_asset = "0.20.0"
 bevy_camera = "0.20.0"

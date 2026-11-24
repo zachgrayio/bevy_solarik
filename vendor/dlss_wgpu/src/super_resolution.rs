@@ -365,6 +365,9 @@ impl Drop for DlssSuperResolution {
             #[cfg(all(windows, feature = "dx12"))]
             crate::sdk::SdkBackend::Dx12 { .. } => {
                 let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                // Poll outside the SDK lock to avoid reentrant deferred-drop deadlocks;
+                // serialize the native API itself with creation/evaluation and RR release.
+                let _sdk = self.sdk.lock().unwrap();
                 unsafe {
                     let _ = check_ngx_result(NVSDK_NGX_D3D12_ReleaseFeature(self.feature));
                 }

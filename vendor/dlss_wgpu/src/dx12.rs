@@ -464,17 +464,65 @@ impl Dx12EvalParams {
     }
 }
 
-/// Application-wide NGX D3D12 state created by [`init_with_d3d12_device`].
-///
-/// Owns the capability `NVSDK_NGX_Parameter*` handle and shuts NGX down on drop.
+#[cfg(windows)]
+#[repr(C)]
+struct UnknownVtable {
+    query_interface: *const c_void,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+}
+#[cfg(windows)]
+struct OwnedDeviceRef(D3D12DevicePtr);
+#[cfg(windows)]
+impl OwnedDeviceRef {
+    unsafe fn retain(device: D3D12DevicePtr) -> Self {
+        // SAFETY: caller supplies a live ID3D12Device; all COM interfaces begin with the
+        // documented IUnknown QueryInterface/AddRef/Release vtable prefix.
+        unsafe {
+            let table = *device.cast::<*const UnknownVtable>();
+            ((*table).add_ref)(device);
+        }
+        Self(device)
+    }
+}
+#[cfg(windows)]
+impl Drop for OwnedDeviceRef {
+    fn drop(&mut self) {
+        // SAFETY: this owns exactly the COM reference acquired by retain; SDK shutdown has
+        // already completed before the reference field is dropped.
+        unsafe {
+            let table = *self.0.cast::<*const UnknownVtable>();
+            ((*table).release)(self.0);
+        }
+    }
+}
+
+/// Application-wide NGX D3D12 state. Owns capability parameters and a native COM device
+/// reference, including initialization/error paths before a wgpu device can be retained.
 pub struct D3D12Sdk {
     /// Raw capability-parameter handle returned by NGX.
     pub parameters: *mut NVSDK_NGX_Parameter,
     /// The raw `ID3D12Device*` NGX was initialized with (kept for shutdown).
     pub device: D3D12DevicePtr,
+    #[cfg(windows)]
+    _device_ref: OwnedDeviceRef,
 }
 
 impl D3D12Sdk {
+    /// Release capability parameters before another provider shuts down shared NGX state.
+    /// The SDK and its owned device remain alive until normal Drop calls Shutdown1.
+    ///
+    /// # Safety
+    /// All feature and operation clients of these parameters must have finished.
+    pub unsafe fn release_parameters(&mut self) -> Result<(), DlssError> {
+        let parameters = std::mem::replace(&mut self.parameters, ptr::null_mut());
+        if parameters.is_null() {
+            return Ok(());
+        }
+        // SAFETY: caller has ended every client and this takes parameter ownership once.
+        unsafe { check_ngx_result(NVSDK_NGX_D3D12_DestroyParameters(parameters)) }
+    }
+
     /// Query whether `feature` is available on the current system.
     pub fn feature_supported(&self, feature: Dx12Feature) -> Result<bool, DlssError> {
         let mut value: c_int = 0;
@@ -496,7 +544,7 @@ impl Drop for D3D12Sdk {
         // SAFETY: both handles come from a successful NGX D3D12 init and are
         // destroyed exactly once, in the correct order (params then device).
         unsafe {
-            let _ = check_ngx_result(NVSDK_NGX_D3D12_DestroyParameters(self.parameters));
+            let _ = self.release_parameters();
             let _ = check_ngx_result(NVSDK_NGX_D3D12_Shutdown1(
                 self.device.cast::<ID3D12Device>(),
             ));
@@ -513,10 +561,17 @@ impl Drop for D3D12Sdk {
 ///
 /// # Errors
 /// Propagates any NGX failure via [`check_ngx_result`].
-pub fn init_with_d3d12_device(
+///
+/// # Safety
+/// `device` must be a live ID3D12Device COM interface. On Windows the returned SDK acquires
+/// its own reference, so the caller's initial reference may be released afterwards.
+pub unsafe fn init_with_d3d12_device(
     project_id: Uuid,
     device: D3D12DevicePtr,
 ) -> Result<D3D12Sdk, DlssError> {
+    #[cfg(windows)]
+    // SAFETY: guaranteed by this function's live-COM-device precondition.
+    let device_ref = unsafe { OwnedDeviceRef::retain(device) };
     with_feature_info(project_id, Default::default(), |feature_info| {
         // SAFETY: `device` is a live ID3D12Device* supplied by the caller; the
         // strings and feature-info pointers come from with_feature_info and
@@ -537,10 +592,20 @@ pub fn init_with_d3d12_device(
     let mut parameters = ptr::null_mut();
     // SAFETY: NGX has been initialized above; `parameters` is a valid out-param.
     unsafe {
-        check_ngx_result(NVSDK_NGX_D3D12_GetCapabilityParameters(&mut parameters))?;
+        if let Err(error) =
+            check_ngx_result(NVSDK_NGX_D3D12_GetCapabilityParameters(&mut parameters))
+        {
+            let _ = NVSDK_NGX_D3D12_Shutdown1(device.cast::<ID3D12Device>());
+            return Err(error);
+        }
     }
     D3D12_NGX_INITIALIZED.store(true, Ordering::Release);
-    Ok(D3D12Sdk { parameters, device })
+    Ok(D3D12Sdk {
+        parameters,
+        device,
+        #[cfg(windows)]
+        _device_ref: device_ref,
+    })
 }
 
 /// Thin wrapper over `NGX_D3D12_CREATE_DLSS_EXT` (DLSS Super Resolution).
@@ -658,6 +723,50 @@ pub unsafe fn release_feature(handle: *mut NVSDK_NGX_Handle) -> Result<(), DlssE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn sdk_device_reference_retains_and_releases_exactly_one_com_reference() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        #[repr(C)]
+        struct Fake {
+            table: *const UnknownVtable,
+            references: AtomicU32,
+        }
+        unsafe extern "system" fn add(device: *mut c_void) -> u32 {
+            // SAFETY: this test supplies its live Fake interface to these IUnknown stubs.
+            unsafe {
+                (*device.cast::<Fake>())
+                    .references
+                    .fetch_add(1, Ordering::SeqCst)
+                    + 1
+            }
+        }
+        unsafe extern "system" fn release(device: *mut c_void) -> u32 {
+            // SAFETY: paired with add for the same test-owned interface; no object is freed.
+            unsafe {
+                (*device.cast::<Fake>())
+                    .references
+                    .fetch_sub(1, Ordering::SeqCst)
+                    - 1
+            }
+        }
+        let table = UnknownVtable {
+            query_interface: ptr::null(),
+            add_ref: add,
+            release,
+        };
+        let device = Fake {
+            table: &table,
+            references: AtomicU32::new(1),
+        };
+        // SAFETY: the interface has a valid live IUnknown prefix for the whole owned reference.
+        let retained =
+            unsafe { OwnedDeviceRef::retain((&device as *const Fake).cast_mut().cast()) };
+        assert_eq!(device.references.load(Ordering::SeqCst), 2);
+        drop(retained);
+        assert_eq!(device.references.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn feature_ids_match_ngx() {

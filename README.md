@@ -103,33 +103,48 @@ bevy_solarik = { git = "https://github.com/AlrikOlson/bevy_solarik", tag = "v0.1
 Development checkouts include Solarik's fork of `bevy_render`, which fixes visible
 meshes being lost while their materials load. Applications using this checkout
 must select the same fork for Bevy's transitive dependencies in their **root**
-Cargo.toml (Cargo does not inherit dependency patches):
+[`Cargo.toml`](Cargo.toml) (Cargo does not inherit dependency patches):
 
 ```toml
 [dependencies]
-bevy = { version = "=0.20.0", features = ["dlss"] }
+bevy = { version = "=0.20.1", features = ["dlss"] }
 bevy_solarik = { path = "../bevy_solarik", features = ["dlss"] }
 
 [patch.crates-io]
 bevy_render = { path = "../bevy_solarik/vendor/bevy_render" }
+bevy_shader = { path = "../bevy_solarik/vendor/bevy_shader" }
 bevy_pbr = { path = "../bevy_solarik/vendor/bevy_pbr" }
+bevy_anti_alias = { path = "../bevy_solarik/vendor/bevy_anti_alias" }
+dlss_wgpu = { path = "../bevy_solarik/vendor/dlss_wgpu" }
 wgpu-core = { path = "../bevy_solarik/vendor/wgpu-core" }
 wgpu-hal = { path = "../bevy_solarik/vendor/wgpu-hal" }
+naga = { path = "../bevy_solarik/vendor/naga" }
 ```
 
 This fork is a development change; it is not included in `v0.1.0`.
 See [renderer integration and validation](docs/renderer-fork.md).
+Keep every patched renderer package on the same checkout/revision; mixing path and older git
+copies can create incompatible render-world labels/resources.
+
+Shared D3D12 NGX applications must use the outer `run_app` builder owner, even with frame
+generation disabled. [Graphics-session lifetime](docs/graphics-session.md) owns initialization,
+feature/parameter/device/DLL teardown and CPU/runtime validation scope. The wrapper preserves
+normal App destruction and its real `AppExit`; it is not a graphics opt-out.
+The abbreviated scene example shows this ownership pattern; supply your application-specific
+DLSS project ID and backend/device initialization hooks before `DefaultPlugins`.
 
 ```rust,ignore
 use bevy::prelude::*;
 use bevy_solarik::prelude::*;
 
-fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(SolarikPlugins)
-        .add_systems(Startup, setup)
-        .run();
+fn main() -> AppExit {
+    bevy_solarik::run_app(|| {
+        let mut app = App::new();
+        app.add_plugins(DefaultPlugins)
+            .add_plugins(SolarikPlugins)
+            .add_systems(Startup, setup);
+        app
+    })
 }
 
 fn setup(mut commands: Commands) {
@@ -162,7 +177,7 @@ Imported glTF may need its u16 indices converted to u32 and tangents generated f
 ## Requirements
 
 - A GPU with Vulkan ray query support. `SolarikPlugins::required_wgpu_features()` lists the required features.
-- Bevy 0.20.0 and wgpu 30.0.1, with Rust 1.98.0 pinned by this checkout (Bevy requires at least 1.97.1). Use this crate in place of `bevy_solari`. Development checkouts require all root patches shown above; the historical `v0.1.0` setup does not.
+- Development Bevy 0.20.1 packages and wgpu 30.0.1, with Rust 1.98.0 pinned by this checkout (Bevy requires at least 1.97.1). Use this crate in place of `bevy_solari`. Development checkouts require all root patches shown above; the historical `v0.1.0` setup does not.
 - A zstd decoder for Bevy's KTX2 lookup tables. The default `zstd_rust` feature supplies one. For the C decoder, use `default-features = false` and enable `zstd_c`.
 - For the optional `dlss` feature: NVIDIA DLSS SDK 310.9.1 (`DLSS_SDK`), `VULKAN_SDK` and libclang at build time, plus `nvngx_dlssd.dll` next to the executable. `dlss_wgpu` 6 requires the complete SDK including its D3D helper header even for Vulkan builds. Without this feature, the output is raw ReSTIR lighting with no denoiser.
 - Composable shaders are WESL 0.6 modules with physical module imports and conditional `@if` attributes. Self-contained kernels remain WGSL. DLSS RR depth uses R32Float; local generic publication/readiness, material retention, meshlet and Vulkan storage/TLAS patches remain part of the development contract.
