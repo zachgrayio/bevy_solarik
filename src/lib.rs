@@ -78,10 +78,17 @@ impl PluginGroup for SolarikPlugins {
 impl SolarikPlugins {
     /// [`WgpuFeatures`] required for these plugins to function.
     pub fn required_wgpu_features() -> WgpuFeatures {
-        WgpuFeatures::EXPERIMENTAL_RAY_QUERY
+        let features = WgpuFeatures::EXPERIMENTAL_RAY_QUERY
             | WgpuFeatures::BUFFER_BINDING_ARRAY
             | WgpuFeatures::TEXTURE_BINDING_ARRAY
             | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-            | WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY
+            | WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY;
+        #[cfg(feature = "nrd")]
+        let features = features
+            | WgpuFeatures::PASSTHROUGH_SHADERS
+            | WgpuFeatures::TEXTURE_FORMAT_16BIT_NORM
+            | WgpuFeatures::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+            | WgpuFeatures::FLOAT32_FILTERABLE;
+        features
     }
 }

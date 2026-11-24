@@ -50,6 +50,10 @@ pub const WORLD_CACHE_SIZE: u64 = 2u64.pow(20);
 /// Internal rendering resources used for Solarik lighting.
 #[derive(Component)]
 pub struct SolarikLightingResources {
+    #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+    has_dlss_rr: bool,
+    #[cfg(feature = "nrd")]
+    pub nrd: super::nrd::ViewDenoiser,
     pub sky_distribution: Buffer,
     pub light_tile_samples: Buffer,
     pub light_tile_resolved_samples: Buffer,
@@ -109,7 +113,17 @@ pub fn prepare_solari_lighting_resources(
             view_size = *resolution_override;
         }
 
-        if solarik_lighting_resources.map(|r| r.view_size) == Some(view_size) {
+        let reuse = solarik_lighting_resources.map(|r| r.view_size) == Some(view_size);
+        #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+        let reuse =
+            reuse && solarik_lighting_resources.is_some_and(|r| r.has_dlss_rr == has_dlss_rr);
+        #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+        if !has_dlss_rr {
+            commands
+                .entity(entity)
+                .remove::<ViewDlssRayReconstructionTextures>();
+        }
+        if reuse {
             continue;
         }
 
@@ -248,6 +262,10 @@ pub fn prepare_solari_lighting_resources(
         });
 
         commands.entity(entity).insert(SolarikLightingResources {
+            #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+            has_dlss_rr,
+            #[cfg(feature = "nrd")]
+            nrd: super::nrd::ViewDenoiser::new(&render_device, view_size),
             sky_distribution,
             light_tile_samples,
             light_tile_resolved_samples,

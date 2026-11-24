@@ -2,9 +2,9 @@
 
 Ray-traced lighting for Bevy 0.20.0. This is a fork of Bevy's experimental `bevy_solari` renderer with sky lighting, point and spot lights, alpha-tested foliage, and a reference pathtracer that accumulates properly.
 
-It keeps Solari's ReSTIR direct and indirect lighting and world-space radiance cache. DLSS Ray Reconstruction is available through the optional `dlss` feature.
+It keeps Solari's ReSTIR direct and indirect lighting and world-space radiance cache. DLSS Ray Reconstruction is available through the optional `dlss` feature. The optional [`nrd` feature](docs/nrd.md) adds source-built NRD RELAX diffuse/specular denoising on Windows and Linux Vulkan when RR is absent.
 
-Tested on Windows with an RTX 4090 and Vulkan. Other hardware and backends are untested.
+The game renderer is tested on Windows with an RTX 4090 and Vulkan. NRD's controller and real compute dispatch/readback also pass on Linux's Vulkan software driver; native Linux hardware ray tracing remains untested. Current vendored Bevy renderer/PBR packages support Bevy 0.20.1.
 
 ## Native graphics inspection
 

@@ -1,0 +1,21 @@
+[package]
+name = "solarik-nrd-wgpu"
+version = "0.1.0"
+edition = "2024"
+links = "solarik_nrd"
+license = "MIT OR Apache-2.0"
+description = "Source-built NRD RELAX dispatches for wgpu Vulkan on Windows and Linux"
+
+[dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "wgsl", "spirv"] }
+thiserror = "2"
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+futures-lite = "2"
+half = "2"
+
+[lints.rust]
+unsafe_code = "deny"

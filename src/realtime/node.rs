@@ -208,6 +208,8 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     previous_view_uniforms: Res<PreviousViewUniforms>,
     frame_count: Res<FrameCount>,
     render_device: Res<RenderDevice>,
+    #[cfg(feature = "nrd")] render_queue: Res<bevy_render::renderer::RenderQueue>,
+    #[cfg(feature = "nrd")] nrd_pipelines: Res<super::nrd::NrdPipelines>,
     #[cfg(feature = "graphics_debug")] query_capture: Option<
         Res<super::query_capture::PrimaryQueryCapture>,
     >,
@@ -347,38 +349,51 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         .and_then(|id| pipeline_cache.get_compute_pipeline(id));
 
     let view_target_attachment = view_target.get_unsampled_color_attachment();
+    #[cfg(feature = "nrd")]
+    let nrd_target = view_target_attachment.view;
 
     let s = solarik_lighting_resources;
+    let lighting_entries = BindGroupEntries::sequential((
+        view_target_attachment.view,
+        s.light_tile_samples.as_entire_binding(),
+        s.light_tile_resolved_samples.as_entire_binding(),
+        &s.di_reservoirs_a,
+        &s.di_reservoirs_b,
+        s.gi_reservoirs_a.as_entire_binding(),
+        s.gi_reservoirs_b.as_entire_binding(),
+        gbuffer,
+        depth_buffer,
+        motion_vectors,
+        previous_gbuffer,
+        previous_depth_buffer,
+        view_uniforms_binding.clone(),
+        previous_view_uniforms_binding,
+        s.world_cache_checksums.as_entire_binding(),
+        s.world_cache_life.as_entire_binding(),
+        s.world_cache_radiance.as_entire_binding(),
+        s.world_cache_geometry_data.as_entire_binding(),
+        s.world_cache_luminance_deltas.as_entire_binding(),
+        s.world_cache_active_cells_new_radiance.as_entire_binding(),
+        s.world_cache_a.as_entire_binding(),
+        s.world_cache_b.as_entire_binding(),
+        s.world_cache_active_cell_indices.as_entire_binding(),
+        s.world_cache_active_cells_count.as_entire_binding(),
+        s.sky_distribution.as_entire_binding(),
+    ))
+    .to_vec();
+    #[cfg(feature = "nrd")]
+    let lighting_entries = {
+        let mut entries = lighting_entries;
+        entries.extend_from_slice(&BindGroupEntries::with_indices((
+            (25, &s.nrd.diffuse),
+            (26, &s.nrd.specular),
+        )));
+        entries
+    };
     let bind_group = render_device.create_bind_group(
         "solarik_lighting_bind_group",
         &pipeline_cache.get_bind_group_layout(&pipelines.bind_group_layout),
-        &BindGroupEntries::sequential((
-            view_target_attachment.view,
-            s.light_tile_samples.as_entire_binding(),
-            s.light_tile_resolved_samples.as_entire_binding(),
-            &s.di_reservoirs_a,
-            &s.di_reservoirs_b,
-            s.gi_reservoirs_a.as_entire_binding(),
-            s.gi_reservoirs_b.as_entire_binding(),
-            gbuffer,
-            depth_buffer,
-            motion_vectors,
-            previous_gbuffer,
-            previous_depth_buffer,
-            view_uniforms_binding,
-            previous_view_uniforms_binding,
-            s.world_cache_checksums.as_entire_binding(),
-            s.world_cache_life.as_entire_binding(),
-            s.world_cache_radiance.as_entire_binding(),
-            s.world_cache_geometry_data.as_entire_binding(),
-            s.world_cache_luminance_deltas.as_entire_binding(),
-            s.world_cache_active_cells_new_radiance.as_entire_binding(),
-            s.world_cache_a.as_entire_binding(),
-            s.world_cache_b.as_entire_binding(),
-            s.world_cache_active_cell_indices.as_entire_binding(),
-            s.world_cache_active_cells_count.as_entire_binding(),
-            s.sky_distribution.as_entire_binding(),
-        )),
+        &lighting_entries,
     );
     let bind_group_world_cache_active_cells_dispatch = render_device.create_bind_group(
         "solarik_lighting_bind_group_world_cache_active_cells_dispatch",
@@ -429,7 +444,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
 
     let command_encoder = ctx.command_encoder();
 
-    // Clear the view target if we're the first node to write to it
+    // Claim and clear the attachment once, before the later forward pass loads it.
     if !PRIMARY && matches!(view_target_attachment.ops.load, LoadOp::Clear(_)) {
         command_encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("solarik_lighting_clear"),
@@ -687,6 +702,33 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     d.end(&mut pass);
 
     drop(pass);
+    #[cfg(feature = "nrd")]
+    {
+        let enabled = solarik_lighting.nrd && matches!(mode, ViewLightingMode::Standard);
+        let span =
+            enabled.then(|| diagnostics.time_span(ctx.command_encoder(), "solarik_lighting/nrd"));
+        super::nrd::denoise(
+            &s.nrd,
+            enabled,
+            reset_flags & 1 != 0,
+            frame_count.0,
+            extracted_view,
+            &render_device,
+            &render_queue,
+            ctx.command_encoder(),
+            &pipeline_cache,
+            &nrd_pipelines,
+            gbuffer,
+            depth_buffer,
+            motion_vectors,
+            view_uniforms_binding,
+            view_uniform_offset.offset,
+            nrd_target,
+        );
+        if let Some(span) = span {
+            span.end(ctx.command_encoder());
+        }
+    }
     // Earlier returns (missing scene/pipelines and the primary compositor)
     // leave both scene events and explicit full resets pending for this view.
     s.history.rendered(scene_bindings.history_generation);
@@ -734,38 +776,58 @@ pub fn init_solari_lighting_pipelines(
         raster_subpixel_bits,
         "Solarik raster reconstruction precision"
     );
-    let bind_group_layout = BindGroupLayoutDescriptor::new(
-        "solarik_lighting_bind_group_layout",
-        &BindGroupLayoutEntries::sequential(
+    let lighting_layout_entries = BindGroupLayoutEntries::sequential(
+        ShaderStages::COMPUTE,
+        (
+            texture_storage_2d(TextureFormat::Rgba16Float, StorageTextureAccess::ReadWrite),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            texture_storage_2d(TextureFormat::Rgba32Uint, StorageTextureAccess::ReadWrite),
+            texture_storage_2d(TextureFormat::Rgba32Uint, StorageTextureAccess::ReadWrite),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            texture_2d(TextureSampleType::Uint),
+            texture_depth_2d(),
+            texture_2d(TextureSampleType::Float { filterable: true }),
+            texture_2d(TextureSampleType::Uint),
+            texture_depth_2d(),
+            uniform_buffer::<ViewUniform>(true),
+            uniform_buffer::<PreviousViewData>(true),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+            storage_buffer_sized(false, None),
+        ),
+    )
+    .to_vec();
+    #[cfg(feature = "nrd")]
+    let lighting_layout_entries = {
+        let mut entries = lighting_layout_entries;
+        entries.extend_from_slice(&BindGroupLayoutEntries::with_indices(
             ShaderStages::COMPUTE,
             (
-                texture_storage_2d(TextureFormat::Rgba16Float, StorageTextureAccess::ReadWrite),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                texture_storage_2d(TextureFormat::Rgba32Uint, StorageTextureAccess::ReadWrite),
-                texture_storage_2d(TextureFormat::Rgba32Uint, StorageTextureAccess::ReadWrite),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                texture_2d(TextureSampleType::Uint),
-                texture_depth_2d(),
-                texture_2d(TextureSampleType::Float { filterable: true }),
-                texture_2d(TextureSampleType::Uint),
-                texture_depth_2d(),
-                uniform_buffer::<ViewUniform>(true),
-                uniform_buffer::<PreviousViewData>(true),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
-                storage_buffer_sized(false, None),
+                (
+                    25,
+                    texture_storage_2d(TextureFormat::Rgba16Float, StorageTextureAccess::ReadWrite),
+                ),
+                (
+                    26,
+                    texture_storage_2d(TextureFormat::Rgba16Float, StorageTextureAccess::ReadWrite),
+                ),
             ),
-        ),
+        ));
+        entries
+    };
+    let bind_group_layout = BindGroupLayoutDescriptor::new(
+        "solarik_lighting_bind_group_layout",
+        &lighting_layout_entries,
     );
 
     let bind_group_layout_world_cache_active_cells_dispatch = BindGroupLayoutDescriptor::new(
@@ -819,6 +881,8 @@ pub fn init_solari_lighting_pipelines(
             raster_subpixel_bits,
         ));
         shader_defs.push("BINDLESS_SURFACE_DETAIL".into());
+        #[cfg(feature = "nrd")]
+        shader_defs.push("NRD_SIGNALS".into());
         if std::env::var("SOLARIK_ADAPTIVE_CACHE_BUDGET").is_ok_and(|v| v == "1") {
             shader_defs.push("ADAPTIVE_CACHE_BUDGET".into());
         }

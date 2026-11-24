@@ -27,6 +27,8 @@ pub fn extract_solari_lighting(
             entity_commands.insert((solarik_lighting.clone(), SkipDeferredLighting));
             solarik_lighting.reset = false;
         } else {
+            #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+            entity_commands.remove::<bevy_anti_alias::dlss::ViewDlssRayReconstructionTextures>();
             entity_commands.remove::<(
                 SolarikLighting,
                 SolarikLightingResources,

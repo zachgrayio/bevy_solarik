@@ -122,7 +122,8 @@ fn composite_primary_glass(pixel_id: vec2u, initial_origin: vec3f, direction: ve
             // Smooth dielectric delta: owns reflected emission and never PSR.
             surface.material.roughness = 0.0;
             surface.material.metallic = 0.0;
-            let reflected = trace_glossy_path(pixel_id, surface, length(hit.world_position - initial_origin), wi, 1.0, rng);
+            var reflected_hit_distance = 0.0;
+            let reflected = trace_glossy_path(pixel_id, surface, length(hit.world_position - initial_origin), wi, 1.0, rng, &reflected_hit_distance);
             radiance += transmission * weights.a * reflected;
         }
         transmission *= weights.rgb;
