@@ -1229,7 +1229,14 @@ pub fn record_frame(
         num_frames_actually_presented: if enabled { 1 + clamped_gen } else { 1 },
         ..Default::default()
     };
-    let mode_changed = sl.last_mode != target_mode || sl.last_num_frames != clamped_gen;
+    let mode_changed = sl.last_mode != target_mode
+        || sl.last_num_frames != clamped_gen
+        || sl.last_dlssg_opts.mvec_depth_width != render_size[0]
+        || sl.last_dlssg_opts.mvec_depth_height != render_size[1]
+        || sl.last_dlssg_opts.color_width != display_size[0]
+        || sl.last_dlssg_opts.color_height != display_size[1]
+        || sl.last_dlssg_opts.mvec_buffer_format != mvec_fmt
+        || sl.last_dlssg_opts.depth_buffer_format != depth_fmt;
     if let Some(set_opts) = sl.features.dlss_g_set_options
         && mode_changed
     {
