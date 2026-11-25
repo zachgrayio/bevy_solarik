@@ -88,7 +88,9 @@ impl Plugin for DlssInitPlugin {
                                     .insert::<DlssRayReconstructionSupported>();
                             }
                         }
-                        Err(_) => {}
+                        Err(err) => {
+                            tracing::warn!(%err, "DLSS register_instance_extensions failed");
+                        }
                     }
                 },
             );
@@ -119,7 +121,9 @@ impl Plugin for DlssInitPlugin {
                                     .remove::<DlssRayReconstructionSupported>();
                             }
                         }
-                        Err(_) => {}
+                        Err(err) => {
+                            tracing::warn!(%err, "DLSS register_device_extensions failed");
+                        }
                     }
                 },
             )
