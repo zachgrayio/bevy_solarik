@@ -17,6 +17,7 @@
 mod extract;
 mod node;
 mod prepare;
+mod streamline;
 
 pub use dlss_wgpu::DlssPerfQualityMode;
 
@@ -171,6 +172,63 @@ impl Plugin for DlssPlugin {
 
         let project_id = app.world().get_resource::<DlssProjectId>()
             .expect("The `dlss` feature is enabled, but DlssProjectId was not added to the App before DlssPlugin.");
+
+        // On interposed Windows Vulkan (when `sl.interposer.dll` owns the
+        // `VkDevice` for DLSS-G), drive DLSS SR and RR through Streamline
+        // (`sl.dlss.dll` / `sl.dlss_d.dll`) instead of direct NGX (`dlss_wgpu`),
+        // avoiding NVIDIA's dual-NGX-init conflict on the same `VkDevice`.
+        if is_vulkan && solarik_streamline_wgpu::is_vulkan_interposed() {
+            let project_id_str = project_id.0.to_string();
+            match solarik_streamline_wgpu::attach_device(&project_id_str, &wgpu_device) {
+                Ok(caps) if caps.dlss_sr_supported => {
+                    app.insert_resource(DlssSuperResolutionSupported);
+                    if caps.dlss_rr_supported {
+                        app.insert_resource(DlssRayReconstructionSupported);
+                    }
+                    app.sub_app_mut(RenderApp)
+                        .add_systems(
+                            ExtractSchedule,
+                            (
+                                extract::extract_dlss::<DlssSuperResolutionFeature>,
+                                extract::extract_dlss::<DlssRayReconstructionFeature>,
+                            ),
+                        )
+                        .add_systems(
+                            Render,
+                            (
+                                streamline::prepare_dlss_streamline::<DlssSuperResolutionFeature>,
+                                streamline::prepare_dlss_streamline::<DlssRayReconstructionFeature>,
+                            )
+                                .in_set(RenderSystems::PrepareViews)
+                                .before(prepare_view_targets),
+                        )
+                        .add_systems(
+                            Core3d,
+                            (
+                                streamline::dlss_super_resolution_streamline,
+                                streamline::dlss_ray_reconstruction_streamline,
+                            )
+                                .chain()
+                                .in_set(Core3dSystems::EarlyPostProcess),
+                        );
+                    info!(
+                        dlss_sr = caps.dlss_sr_supported,
+                        dlss_rr = caps.dlss_rr_supported,
+                        "DLSS SR/RR enabled via Streamline on interposed Vulkan"
+                    );
+                    return;
+                }
+                Ok(_) => {
+                    info!("Streamline reported DLSS SR unsupported on interposed Vulkan");
+                    return;
+                }
+                Err(err) => {
+                    info!(?err, "Streamline attach_device failed on interposed Vulkan");
+                    return;
+                }
+            }
+        }
+
         let dlss_sdk = dlss_wgpu::DlssSdk::new(project_id.0, wgpu_device);
         let dlss_sdk = match dlss_sdk {
             Ok(sdk) => sdk,

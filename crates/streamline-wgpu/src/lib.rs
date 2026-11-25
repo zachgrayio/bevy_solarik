@@ -15,6 +15,7 @@ mod runtime;
 
 pub use runtime::{
     Error, FrameGenCapabilities, FrameGenState, RetiredRuntime, Streamline, attach_device,
-    current_capabilities, install_swapchain_interception, is_ready, preinit, record_frame,
+    current_capabilities, dlss_optimal_render_size, evaluate_dlss_rr, evaluate_dlss_sr,
+    install_swapchain_interception, is_ready, is_vulkan_interposed, preinit, record_frame,
     shutdown, shutdown_retaining_runtime,
 };

@@ -32,9 +32,14 @@ pub enum Error {
     UnsupportedBackend,
 }
 
-/// Real runtime capabilities queried from Streamline + `sl.dlss_g.dll`.
+/// Real runtime capabilities queried from Streamline (`sl.dlss.dll`,
+/// `sl.dlss_d.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameGenCapabilities {
+    /// Streamline `kFeatureDLSS` (Super Resolution) is supported on this GPU.
+    pub dlss_sr_supported: bool,
+    /// Streamline `kFeatureDLSS_RR` (Ray Reconstruction) is supported on this GPU.
+    pub dlss_rr_supported: bool,
     /// Streamline initialized and `kFeatureDLSS_G` is supported on this GPU/OS.
     pub dlss_g_supported: bool,
     /// Maximum interpolated frames per real frame reported by `slDLSSGGetState`
@@ -72,10 +77,25 @@ type FnSlSetTagForFrame = unsafe extern "C" fn(
     u32,
     *mut c_void,
 ) -> SlResult;
+type FnSlEvaluateFeature = unsafe extern "C" fn(
+    Feature,
+    *const BaseStructure,
+    *const *const BaseStructure,
+    u32,
+    *mut c_void,
+) -> SlResult;
 type FnSlSetD3DDevice = unsafe extern "C" fn(*mut c_void) -> SlResult;
 type FnSlSetVulkanInfo = unsafe extern "C" fn(*const VulkanInfo) -> SlResult;
 type FnSlUpgradeInterface = unsafe extern "C" fn(*mut *mut c_void) -> SlResult;
 
+type FnDlssSetOptions =
+    unsafe extern "C" fn(*const ViewportHandle, *const DlssOptions) -> SlResult;
+type FnDlssGetOptimalSettings =
+    unsafe extern "C" fn(*const DlssOptions, *mut DlssOptimalSettings) -> SlResult;
+type FnDlssDSetOptions =
+    unsafe extern "C" fn(*const ViewportHandle, *const DlssDOptions) -> SlResult;
+type FnDlssDGetOptimalSettings =
+    unsafe extern "C" fn(*const DlssDOptions, *mut DlssDOptimalSettings) -> SlResult;
 type FnDlssGSetOptions =
     unsafe extern "C" fn(*const ViewportHandle, *const DlssGOptions) -> SlResult;
 type FnDlssGGetState =
@@ -93,19 +113,19 @@ struct CoreExports {
     sl_get_new_frame_token: FnSlGetNewFrameToken,
     sl_set_constants: FnSlSetConstants,
     sl_set_tag_for_frame: FnSlSetTagForFrame,
+    sl_evaluate_feature: FnSlEvaluateFeature,
     #[cfg(windows)]
     sl_set_d3d_device: FnSlSetD3DDevice,
     sl_set_vulkan_info: FnSlSetVulkanInfo,
     #[cfg(windows)]
     sl_upgrade_interface: FnSlUpgradeInterface,
-    vk_create_swapchain: Option<ash::vk::PFN_vkCreateSwapchainKHR>,
-    vk_destroy_swapchain: Option<ash::vk::PFN_vkDestroySwapchainKHR>,
-    vk_get_swapchain_images: Option<ash::vk::PFN_vkGetSwapchainImagesKHR>,
-    vk_acquire_next_image: Option<ash::vk::PFN_vkAcquireNextImageKHR>,
-    vk_queue_present: Option<ash::vk::PFN_vkQueuePresentKHR>,
 }
 
 struct FeatureExports {
+    dlss_set_options: Option<FnDlssSetOptions>,
+    dlss_get_optimal_settings: Option<FnDlssGetOptimalSettings>,
+    dlss_d_set_options: Option<FnDlssDSetOptions>,
+    dlss_d_get_optimal_settings: Option<FnDlssDGetOptimalSettings>,
     dlss_g_set_options: Option<FnDlssGSetOptions>,
     dlss_g_get_state: Option<FnDlssGGetState>,
     reflex_set_options: Option<FnReflexSetOptions>,
@@ -225,41 +245,12 @@ fn load_core() -> Result<(CoreExports, PathBuf), Error> {
             ),
             sl_set_constants: load_sym!(library, "slSetConstants\0", FnSlSetConstants),
             sl_set_tag_for_frame: load_sym!(library, "slSetTagForFrame\0", FnSlSetTagForFrame),
+            sl_evaluate_feature: load_sym!(library, "slEvaluateFeature\0", FnSlEvaluateFeature),
             #[cfg(windows)]
             sl_set_d3d_device: load_sym!(library, "slSetD3DDevice\0", FnSlSetD3DDevice),
             sl_set_vulkan_info: load_sym!(library, "slSetVulkanInfo\0", FnSlSetVulkanInfo),
             #[cfg(windows)]
             sl_upgrade_interface: load_sym!(library, "slUpgradeInterface\0", FnSlUpgradeInterface),
-            vk_create_swapchain: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkCreateSwapchainKHR>(b"vkCreateSwapchainKHR\0")
-                    .ok()
-                    .map(|symbol| *symbol)
-            },
-            vk_destroy_swapchain: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkDestroySwapchainKHR>(b"vkDestroySwapchainKHR\0")
-                    .ok()
-                    .map(|symbol| *symbol)
-            },
-            vk_get_swapchain_images: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkGetSwapchainImagesKHR>(b"vkGetSwapchainImagesKHR\0")
-                    .ok()
-                    .map(|symbol| *symbol)
-            },
-            vk_acquire_next_image: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkAcquireNextImageKHR>(b"vkAcquireNextImageKHR\0")
-                    .ok()
-                    .map(|symbol| *symbol)
-            },
-            vk_queue_present: unsafe {
-                library
-                    .get::<ash::vk::PFN_vkQueuePresentKHR>(b"vkQueuePresentKHR\0")
-                    .ok()
-                    .map(|symbol| *symbol)
-            },
             _library: library,
         };
         tracing::info!(
@@ -400,6 +391,11 @@ pub fn attach_device(
     project_id_uuid: &str,
     device: &wgpu::Device,
 ) -> Result<FrameGenCapabilities, Error> {
+    if let Ok(guard) = global_slot().lock()
+        && let Some(sl) = guard.as_ref()
+    {
+        return Ok(sl.capabilities);
+    }
     let is_dx12 = {
         #[cfg(windows)]
         {
@@ -471,9 +467,23 @@ pub fn attach_device(
         }
     }
 
+    let dlss_sr_res = unsafe { (core.sl_is_feature_supported)(K_FEATURE_DLSS, &adapter_info) };
+    let dlss_rr_res = unsafe { (core.sl_is_feature_supported)(K_FEATURE_DLSS_RR, &adapter_info) };
     let dlss_g_res = unsafe { (core.sl_is_feature_supported)(K_FEATURE_DLSS_G, &adapter_info) };
     let reflex_res = unsafe { (core.sl_is_feature_supported)(K_FEATURE_REFLEX, &adapter_info) };
     let features = FeatureExports {
+        dlss_set_options: unsafe {
+            query_feature_fn(&core, K_FEATURE_DLSS, b"slDLSSSetOptions\0")
+        },
+        dlss_get_optimal_settings: unsafe {
+            query_feature_fn(&core, K_FEATURE_DLSS, b"slDLSSGetOptimalSettings\0")
+        },
+        dlss_d_set_options: unsafe {
+            query_feature_fn(&core, K_FEATURE_DLSS_RR, b"slDLSSDSetOptions\0")
+        },
+        dlss_d_get_optimal_settings: unsafe {
+            query_feature_fn(&core, K_FEATURE_DLSS_RR, b"slDLSSDGetOptimalSettings\0")
+        },
         dlss_g_set_options: unsafe {
             query_feature_fn(&core, K_FEATURE_DLSS_G, b"slDLSSGSetOptions\0")
         },
@@ -513,6 +523,8 @@ pub fn attach_device(
         0
     };
     let capabilities = FrameGenCapabilities {
+        dlss_sr_supported: dlss_sr_res == SL_RESULT_OK && features.dlss_set_options.is_some(),
+        dlss_rr_supported: dlss_rr_res == SL_RESULT_OK && features.dlss_d_set_options.is_some(),
         dlss_g_supported,
         max_generated_frames: effective_max_gen,
         mfg_supported: effective_max_gen >= 2,
@@ -521,6 +533,8 @@ pub fn attach_device(
 
     tracing::info!(
         is_dx12,
+        dlss_sr = capabilities.dlss_sr_supported,
+        dlss_rr = capabilities.dlss_rr_supported,
         dlss_g = capabilities.dlss_g_supported,
         max_generated_frames = capabilities.max_generated_frames,
         mfg = capabilities.mfg_supported,
@@ -664,6 +678,315 @@ fn on_present_end() {
             let _ = set_marker(PCL_MARKER_PRESENT_END, sl.active_frame_token);
         }
     }
+}
+
+/// Whether Streamline pre-init routed Vulkan entry points through `sl.interposer.dll`.
+pub fn is_vulkan_interposed() -> bool {
+    VULKAN_INTERPOSED.load(Ordering::Acquire)
+}
+
+/// Query optimal render resolution `[width, height]` from Streamline DLSS SR or RR.
+pub fn dlss_optimal_render_size(
+    output_size: [u32; 2],
+    mode: u32,
+    ray_reconstruction: bool,
+) -> Option<[u32; 2]> {
+    let guard = global_slot().lock().ok()?;
+    let sl = guard.as_ref()?;
+    if ray_reconstruction {
+        let get_opt = sl.features.dlss_d_get_optimal_settings?;
+        let opts = DlssDOptions {
+            mode,
+            output_width: output_size[0],
+            output_height: output_size[1],
+            ..DlssDOptions::default()
+        };
+        let mut settings = DlssDOptimalSettings::default();
+        if unsafe { get_opt(&opts, &mut settings) } == SL_RESULT_OK
+            && settings.optimal_render_width > 0
+            && settings.optimal_render_height > 0
+        {
+            return Some([settings.optimal_render_width, settings.optimal_render_height]);
+        }
+    } else {
+        let get_opt = sl.features.dlss_get_optimal_settings?;
+        let opts = DlssOptions {
+            mode,
+            output_width: output_size[0],
+            output_height: output_size[1],
+            ..DlssOptions::default()
+        };
+        let mut settings = DlssOptimalSettings::default();
+        if unsafe { get_opt(&opts, &mut settings) } == SL_RESULT_OK
+            && settings.optimal_render_width > 0
+            && settings.optimal_render_height > 0
+        {
+            return Some([settings.optimal_render_width, settings.optimal_render_height]);
+        }
+    }
+    None
+}
+
+/// Evaluate Streamline DLSS Super Resolution (`kFeatureDLSS`) on the active
+/// command encoder.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_dlss_sr(
+    frame_index: u32,
+    mode: u32,
+    output_size: [u32; 2],
+    render_size: [u32; 2],
+    jitter_offset: [f32; 2],
+    reset: bool,
+    color_in: &wgpu::TextureView,
+    color_out: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    motion_vectors: &wgpu::TextureView,
+    exposure: Option<&wgpu::TextureView>,
+    cmd_buffer: &mut wgpu::CommandEncoder,
+) -> Result<(), Error> {
+    let mut guard = global_slot().lock().unwrap();
+    let sl = guard.as_mut().ok_or(Error::NotInitialized)?;
+    let set_opts = sl
+        .features
+        .dlss_set_options
+        .ok_or(Error::Api("slDLSSSetOptions", 16))?;
+
+    let mut token: *mut BaseStructure = ptr::null_mut();
+    let tok_res = unsafe { (sl.core.sl_get_new_frame_token)(&mut token, &frame_index) };
+    if tok_res != SL_RESULT_OK || token.is_null() {
+        return Err(Error::Api("slGetNewFrameToken", tok_res));
+    }
+    sl.active_frame_token = token;
+
+    let viewport = ViewportHandle::new(0);
+    let constants = Constants {
+        jitter_offset,
+        mvec_scale: [1.0, 1.0],
+        reset: if reset { BOOLEAN_TRUE } else { BOOLEAN_FALSE },
+        ..Constants::default()
+    };
+    unsafe {
+        let _ = (sl.core.sl_set_constants)(&constants, token, &viewport);
+    }
+
+    let opts = DlssOptions {
+        mode,
+        output_width: output_size[0],
+        output_height: output_size[1],
+        ..DlssOptions::default()
+    };
+    let opt_res = unsafe { set_opts(&viewport, &opts) };
+    if opt_res != SL_RESULT_OK {
+        return Err(Error::Api("slDLSSSetOptions", opt_res));
+    }
+
+    let mut in_res = make_sl_resource(sl.is_dx12, color_in, false);
+    let mut out_res = make_sl_resource(sl.is_dx12, color_out, true);
+    let mut depth_res = make_sl_resource(sl.is_dx12, depth, false);
+    let mut mv_res = make_sl_resource(sl.is_dx12, motion_vectors, false);
+    let mut exp_res = exposure.and_then(|v| make_sl_resource(sl.is_dx12, v, false));
+
+    let render_ext = Extent {
+        top: 0,
+        left: 0,
+        width: render_size[0],
+        height: render_size[1],
+    };
+    let out_ext = Extent {
+        top: 0,
+        left: 0,
+        width: output_size[0],
+        height: output_size[1],
+    };
+    let mut tags = Vec::with_capacity(5);
+    let mut push_tag = |res: Option<&mut Resource>, kind: BufferType, ext: Extent| {
+        if let Some(r) = res {
+            let mut t = ResourceTag::new(r, kind, ext);
+            t.lifecycle = RESOURCE_LIFECYCLE_VALID_UNTIL_EVALUATE;
+            tags.push(t);
+        }
+    };
+    push_tag(in_res.as_mut(), K_BUFFER_TYPE_SCALING_INPUT_COLOR, render_ext);
+    push_tag(out_res.as_mut(), K_BUFFER_TYPE_SCALING_OUTPUT_COLOR, out_ext);
+    push_tag(depth_res.as_mut(), K_BUFFER_TYPE_DEPTH, render_ext);
+    push_tag(mv_res.as_mut(), K_BUFFER_TYPE_MOTION_VECTORS, render_ext);
+    push_tag(
+        exp_res.as_mut(),
+        K_BUFFER_TYPE_EXPOSURE,
+        Extent {
+            top: 0,
+            left: 0,
+            width: 1,
+            height: 1,
+        },
+    );
+
+    let raw_cmd = extract_cmd_ptr(sl.is_dx12, Some(cmd_buffer));
+    unsafe {
+        let _ = (sl.core.sl_set_tag_for_frame)(
+            token,
+            &viewport,
+            tags.as_ptr(),
+            tags.len() as u32,
+            raw_cmd,
+        );
+    }
+    let inputs: [*const BaseStructure; 1] = [(&viewport as *const ViewportHandle).cast()];
+    let eval_res = unsafe {
+        (sl.core.sl_evaluate_feature)(
+            K_FEATURE_DLSS,
+            token,
+            inputs.as_ptr(),
+            inputs.len() as u32,
+            raw_cmd,
+        )
+    };
+    if eval_res != SL_RESULT_OK {
+        return Err(Error::Api("slEvaluateFeature(DLSS)", eval_res));
+    }
+    Ok(())
+}
+
+/// Evaluate Streamline DLSS Ray Reconstruction (`kFeatureDLSS_RR`) on the active
+/// command encoder.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_dlss_rr(
+    frame_index: u32,
+    mode: u32,
+    output_size: [u32; 2],
+    render_size: [u32; 2],
+    jitter_offset: [f32; 2],
+    reset: bool,
+    world_to_camera_view: [[f32; 4]; 4],
+    camera_view_to_world: [[f32; 4]; 4],
+    color_in: &wgpu::TextureView,
+    color_out: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    motion_vectors: &wgpu::TextureView,
+    diffuse_albedo: &wgpu::TextureView,
+    specular_albedo: &wgpu::TextureView,
+    normal_roughness: &wgpu::TextureView,
+    specular_motion_vectors: Option<&wgpu::TextureView>,
+    exposure: Option<&wgpu::TextureView>,
+    cmd_buffer: &mut wgpu::CommandEncoder,
+) -> Result<(), Error> {
+    let mut guard = global_slot().lock().unwrap();
+    let sl = guard.as_mut().ok_or(Error::NotInitialized)?;
+    let set_opts = sl
+        .features
+        .dlss_d_set_options
+        .ok_or(Error::Api("slDLSSDSetOptions", 16))?;
+
+    let mut token: *mut BaseStructure = ptr::null_mut();
+    let tok_res = unsafe { (sl.core.sl_get_new_frame_token)(&mut token, &frame_index) };
+    if tok_res != SL_RESULT_OK || token.is_null() {
+        return Err(Error::Api("slGetNewFrameToken", tok_res));
+    }
+    sl.active_frame_token = token;
+
+    let viewport = ViewportHandle::new(0);
+    let constants = Constants {
+        jitter_offset,
+        mvec_scale: [1.0, 1.0],
+        reset: if reset { BOOLEAN_TRUE } else { BOOLEAN_FALSE },
+        ..Constants::default()
+    };
+    unsafe {
+        let _ = (sl.core.sl_set_constants)(&constants, token, &viewport);
+    }
+
+    let opts = DlssDOptions {
+        mode,
+        output_width: output_size[0],
+        output_height: output_size[1],
+        normal_roughness_mode: DLSSD_NORMAL_ROUGHNESS_PACKED,
+        world_to_camera_view,
+        camera_view_to_world,
+        ..DlssDOptions::default()
+    };
+    let opt_res = unsafe { set_opts(&viewport, &opts) };
+    if opt_res != SL_RESULT_OK {
+        return Err(Error::Api("slDLSSDSetOptions", opt_res));
+    }
+
+    let mut in_res = make_sl_resource(sl.is_dx12, color_in, false);
+    let mut out_res = make_sl_resource(sl.is_dx12, color_out, true);
+    let mut depth_res = make_sl_resource(sl.is_dx12, depth, false);
+    let mut mv_res = make_sl_resource(sl.is_dx12, motion_vectors, false);
+    let mut diff_res = make_sl_resource(sl.is_dx12, diffuse_albedo, false);
+    let mut spec_res = make_sl_resource(sl.is_dx12, specular_albedo, false);
+    let mut norm_res = make_sl_resource(sl.is_dx12, normal_roughness, false);
+    let mut spec_mv_res =
+        specular_motion_vectors.and_then(|v| make_sl_resource(sl.is_dx12, v, false));
+    let mut exp_res = exposure.and_then(|v| make_sl_resource(sl.is_dx12, v, false));
+
+    let render_ext = Extent {
+        top: 0,
+        left: 0,
+        width: render_size[0],
+        height: render_size[1],
+    };
+    let out_ext = Extent {
+        top: 0,
+        left: 0,
+        width: output_size[0],
+        height: output_size[1],
+    };
+    let mut tags = Vec::with_capacity(9);
+    let mut push_tag = |res: Option<&mut Resource>, kind: BufferType, ext: Extent| {
+        if let Some(r) = res {
+            let mut t = ResourceTag::new(r, kind, ext);
+            t.lifecycle = RESOURCE_LIFECYCLE_VALID_UNTIL_EVALUATE;
+            tags.push(t);
+        }
+    };
+    push_tag(in_res.as_mut(), K_BUFFER_TYPE_SCALING_INPUT_COLOR, render_ext);
+    push_tag(out_res.as_mut(), K_BUFFER_TYPE_SCALING_OUTPUT_COLOR, out_ext);
+    push_tag(depth_res.as_mut(), K_BUFFER_TYPE_DEPTH, render_ext);
+    push_tag(mv_res.as_mut(), K_BUFFER_TYPE_MOTION_VECTORS, render_ext);
+    push_tag(diff_res.as_mut(), K_BUFFER_TYPE_ALBEDO, render_ext);
+    push_tag(spec_res.as_mut(), K_BUFFER_TYPE_SPECULAR_ALBEDO, render_ext);
+    push_tag(norm_res.as_mut(), K_BUFFER_TYPE_NORMAL_ROUGHNESS, render_ext);
+    push_tag(
+        spec_mv_res.as_mut(),
+        K_BUFFER_TYPE_SPECULAR_MOTION_VECTORS,
+        render_ext,
+    );
+    push_tag(
+        exp_res.as_mut(),
+        K_BUFFER_TYPE_EXPOSURE,
+        Extent {
+            top: 0,
+            left: 0,
+            width: 1,
+            height: 1,
+        },
+    );
+
+    let raw_cmd = extract_cmd_ptr(sl.is_dx12, Some(cmd_buffer));
+    unsafe {
+        let _ = (sl.core.sl_set_tag_for_frame)(
+            token,
+            &viewport,
+            tags.as_ptr(),
+            tags.len() as u32,
+            raw_cmd,
+        );
+    }
+    let inputs: [*const BaseStructure; 1] = [(&viewport as *const ViewportHandle).cast()];
+    let eval_res = unsafe {
+        (sl.core.sl_evaluate_feature)(
+            K_FEATURE_DLSS_RR,
+            token,
+            inputs.as_ptr(),
+            inputs.len() as u32,
+            raw_cmd,
+        )
+    };
+    if eval_res != SL_RESULT_OK {
+        return Err(Error::Api("slEvaluateFeature(DLSS_RR)", eval_res));
+    }
+    Ok(())
 }
 
 /// Whether Streamline is initialized and ready.
