@@ -315,7 +315,13 @@ fn init_streamline(
     use_interposer_proxies: bool,
 ) -> Result<(), Error> {
     let plugin_paths = [plugin_dir_wide.as_ptr()];
-    let features_to_load = [K_FEATURE_PCL, K_FEATURE_REFLEX, K_FEATURE_DLSS_G];
+    let features_to_load = [
+        K_FEATURE_DLSS,
+        K_FEATURE_DLSS_RR,
+        K_FEATURE_PCL,
+        K_FEATURE_REFLEX,
+        K_FEATURE_DLSS_G,
+    ];
     let engine_ver = c"1.0.0";
     let mut flags = PREF_DISABLE_CL_STATE_TRACKING | PREF_USE_FRAME_BASED_RESOURCE_TAGGING;
     if !use_interposer_proxies {

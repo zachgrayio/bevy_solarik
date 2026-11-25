@@ -32,8 +32,10 @@ pub type SlResult = u32;
 pub const SL_RESULT_OK: SlResult = 0;
 
 pub type Feature = u32;
+pub const K_FEATURE_DLSS: Feature = 0;
 pub const K_FEATURE_REFLEX: Feature = 3;
 pub const K_FEATURE_PCL: Feature = 4;
+pub const K_FEATURE_DLSS_RR: Feature = 16;
 pub const K_FEATURE_DLSS_G: Feature = 1000;
 
 pub type BufferType = u32;
