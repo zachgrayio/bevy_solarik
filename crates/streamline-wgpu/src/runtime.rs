@@ -297,6 +297,22 @@ fn pre_init_slot() -> &'static Mutex<Option<PreInit>> {
     PRE_INIT.get_or_init(|| Mutex::new(None))
 }
 
+unsafe extern "C" fn sl_log_callback(log_type: u32, msg: *const c_char) {
+    if msg.is_null() {
+        return;
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    match log_type {
+        2 => tracing::error!("SL: {trimmed}"),
+        1 => tracing::warn!("SL: {trimmed}"),
+        _ => tracing::debug!("SL: {trimmed}"),
+    }
+}
+
 /// Issue `slInit` with the preferences this crate always uses.
 fn init_streamline(
     core: &CoreExports,
@@ -327,7 +343,7 @@ fn init_streamline(
         path_to_logs_and_data: ptr::null(),
         allocate_callback: ptr::null(),
         release_callback: ptr::null(),
-        log_message_callback: ptr::null(),
+        log_message_callback: sl_log_callback as *const c_void,
         flags,
         features_to_load: features_to_load.as_ptr(),
         num_features_to_load: features_to_load.len() as u32,
@@ -1130,6 +1146,15 @@ pub fn record_frame(
     } else {
         DLSSG_MODE_OFF
     };
+    let (mvec_fmt, depth_fmt, hudless_fmt) = if sl.is_dx12 {
+        (0, 0, 0)
+    } else {
+        (
+            wgpu_format_to_vk(motion_vectors.texture().format()),
+            wgpu_format_to_vk(depth.texture().format()),
+            wgpu_format_to_vk(hudless_color.texture().format()),
+        )
+    };
     let opts = DlssGOptions {
         mode: target_mode,
         num_frames_to_generate: clamped_gen.max(1),
@@ -1138,6 +1163,9 @@ pub fn record_frame(
         mvec_depth_height: render_size[1],
         color_width: display_size[0],
         color_height: display_size[1],
+        mvec_buffer_format: mvec_fmt,
+        depth_buffer_format: depth_fmt,
+        hud_less_buffer_format: hudless_fmt,
         ..DlssGOptions::default()
     };
     if let Some(set_opts) = sl.features.dlss_g_set_options
