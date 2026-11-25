@@ -180,8 +180,10 @@ impl Plugin for DlssPlugin {
         if is_vulkan && solarik_streamline_wgpu::is_vulkan_interposed() {
             let project_id_str = project_id.0.to_string();
             match solarik_streamline_wgpu::attach_device(&project_id_str, &wgpu_device) {
-                Ok(caps) if caps.dlss_sr_supported => {
-                    app.insert_resource(DlssSuperResolutionSupported);
+                Ok(caps) if caps.dlss_sr_supported || caps.dlss_rr_supported => {
+                    if caps.dlss_sr_supported {
+                        app.insert_resource(DlssSuperResolutionSupported);
+                    }
                     if caps.dlss_rr_supported {
                         app.insert_resource(DlssRayReconstructionSupported);
                     }
