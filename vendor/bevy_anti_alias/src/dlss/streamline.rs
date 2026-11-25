@@ -167,6 +167,10 @@ pub fn dlss_super_resolution_streamline(
     let mut sl_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("streamline_dlss_sr"),
     });
+    // Ensure wgpu-core opens the underlying VkCommandBuffer / ID3D12GraphicsCommandList
+    // before extracting the raw handle for `slEvaluateFeature`.
+    sl_encoder.push_debug_group("streamline_dlss_sr");
+    sl_encoder.pop_debug_group();
     if let Err(err) = solarik_streamline_wgpu::evaluate_dlss_sr(
         frame_count.0,
         to_sl_mode(dlss.perf_quality_mode),
@@ -228,6 +232,10 @@ pub fn dlss_ray_reconstruction_streamline(
     let mut sl_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("streamline_dlss_rr"),
     });
+    // Ensure wgpu-core opens the underlying VkCommandBuffer / ID3D12GraphicsCommandList
+    // before extracting the raw handle for `slEvaluateFeature`.
+    sl_encoder.push_debug_group("streamline_dlss_rr");
+    sl_encoder.pop_debug_group();
     if let Err(err) = solarik_streamline_wgpu::evaluate_dlss_rr(
         frame_count.0,
         to_sl_mode(dlss.perf_quality_mode),
