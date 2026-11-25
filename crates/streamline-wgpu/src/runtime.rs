@@ -741,11 +741,13 @@ fn on_present_end() {
             }
             PRESENT_MARKERS_ACTIVE.store(true, Ordering::Release);
         }
-        // Query `slDLSSGGetState` synchronously on the present thread so we
-        // measure the true number of presented frames (real + generated)
-        // without racing with worker threads.
-        let mut presented = 1u64;
-        if sl.last_mode == DLSSG_MODE_ON
+        // `slDLSSGGetState` is a synchronizing call; sampling it every present
+        // serializes the present queue. Sample sparsely for telemetry only.
+        let mut presented = 0u64;
+        let sample = PRESENT_MARKERS_ACTIVE.load(Ordering::Acquire)
+            && PRESENTED_FRAMES.load(Ordering::Relaxed) % 8 == 0;
+        if sample
+            && sl.last_mode == DLSSG_MODE_ON
             && let Some(get_state) = sl.features.dlss_g_get_state
         {
             let viewport = ViewportHandle::new(0);
@@ -1175,16 +1177,10 @@ pub fn record_frame(
             let _ = set_reflex(&reflex_opts);
         }
     }
-    // Only spin in `slReflexSleep` once present-end markers actually reach
-    // Reflex; without them the sleep never returns and the frame rate collapses.
-    if enabled
-        && PRESENT_MARKERS_ACTIVE.load(Ordering::Acquire)
-        && let Some(sleep) = sl.features.reflex_sleep
-    {
-        unsafe {
-            let _ = sleep(token);
-        }
-    }
+    // `slReflexSleep` is a CPU spin that waits for the next present; with DLSS-G
+    // pacing it only adds latency here, and DLSS-G requires Reflex to be
+    // *enabled* (set above), not the sleep call. Keep it out of the frame loop.
+    let _ = (&hudless_color, &sl.features.reflex_sleep);
     if let Some(set_marker) = sl.features.pcl_set_marker {
         unsafe {
             let _ = set_marker(PCL_MARKER_SIMULATION_START, token);
@@ -1208,11 +1204,11 @@ pub fn record_frame(
     if enabled {
         let mut depth_res = make_sl_resource(sl.is_dx12, depth, false);
         let mut mv_res = make_sl_resource(sl.is_dx12, motion_vectors, false);
-        let mut color_res = if sl.is_dx12 {
-            make_sl_resource(true, hudless_color, false)
-        } else {
-            None
-        };
+        // Never tag an explicit HUD-less color buffer: `sl.dlss_g` reads the
+        // swapchain backbuffer it owns, and an extra full-resolution tagged
+        // texture forces a per-frame GPU pipeline flush (a several-hundred ms
+        // stall per frame on DX12).
+        let mut color_res: Option<Resource> = None;
         let render_extent = Extent {
             top: 0,
             left: 0,
