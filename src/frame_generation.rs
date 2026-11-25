@@ -374,7 +374,7 @@ fn run_frame_generation(
             clip_to_prev_clip: mat4_to_row_major(clip_to_prev_clip),
             prev_clip_to_clip: mat4_to_row_major(prev_clip_to_clip),
             jitter_offset: jitter.map_or([0.0, 0.0], |j| (-j.offset).to_array()),
-            mvec_scale: [1.0, 1.0],
+            mvec_scale: [-(render_size.x as f32), -(render_size.y as f32)],
             camera_pos: extracted_view.world_from_view.translation().into(),
             camera_up: extracted_view.world_from_view.up().as_vec3().into(),
             camera_right: extracted_view.world_from_view.right().as_vec3().into(),

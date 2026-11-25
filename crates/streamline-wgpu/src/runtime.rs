@@ -718,10 +718,21 @@ fn on_present_end() {
         {
             let viewport = ViewportHandle::new(0);
             let mut raw_state = DlssGState::default();
-            if unsafe { get_state(&viewport, &mut raw_state, &sl.last_dlssg_opts) } == SL_RESULT_OK
-                && raw_state.num_frames_actually_presented > 0
-            {
+            let res = unsafe { get_state(&viewport, &mut raw_state, &sl.last_dlssg_opts) };
+            if res == SL_RESULT_OK && raw_state.num_frames_actually_presented > 0 {
                 presented = raw_state.num_frames_actually_presented as u64;
+            }
+            static LOGGED_PRESENT: AtomicBool = AtomicBool::new(false);
+            if PRESENTED_FRAMES.load(Ordering::Relaxed) >= 15
+                && !LOGGED_PRESENT.swap(true, Ordering::Relaxed)
+            {
+                tracing::info!(
+                    res,
+                    status = raw_state.status,
+                    presented = raw_state.num_frames_actually_presented,
+                    max_gen = raw_state.num_frames_to_generate_max,
+                    "Streamline DLSS-G steady-state present telemetry"
+                );
             }
         }
         PRESENTED_FRAMES.fetch_add(presented, Ordering::Relaxed);
