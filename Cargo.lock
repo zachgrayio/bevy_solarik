@@ -299,6 +299,7 @@ dependencies = [
  "bevy_shader",
  "bevy_utils",
  "dlss_wgpu",
+ "solarik-streamline-wgpu",
  "tracing",
  "uuid",
 ]

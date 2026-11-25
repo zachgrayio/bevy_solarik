@@ -1065,6 +1065,29 @@ pub fn set_swapchain_hooks(hooks: Dx12SwapchainHooks) {
     *DX12_SWAPCHAIN_HOOKS.write() = hooks;
 }
 
+/// Additively register hooks, filling only the fields set in `patch` and keeping
+/// any already-registered hooks. Streamline needs `on_swapchain_created` +
+/// present markers while AMD FFX needs `create_swapchain_for_hwnd`; replacing
+/// the whole set made the last installer silently disable the other.
+pub fn merge_swapchain_hooks(patch: Dx12SwapchainHooks) {
+    let mut current = DX12_SWAPCHAIN_HOOKS.write();
+    if patch.on_swapchain_created.is_some() {
+        current.on_swapchain_created = patch.on_swapchain_created;
+    }
+    if patch.create_swapchain_for_hwnd.is_some() {
+        current.create_swapchain_for_hwnd = patch.create_swapchain_for_hwnd;
+    }
+    if patch.on_present_start.is_some() {
+        current.on_present_start = patch.on_present_start;
+    }
+    if patch.on_present_end.is_some() {
+        current.on_present_end = patch.on_present_end;
+    }
+    if patch.on_presented.is_some() {
+        current.on_presented = patch.on_presented;
+    }
+}
+
 impl CommandEncoder {
     /// Raw `ID3D12GraphicsCommandList*` currently open for recording, if any.
     pub fn raw_command_list_ptr(&self) -> Option<*mut ffi::c_void> {

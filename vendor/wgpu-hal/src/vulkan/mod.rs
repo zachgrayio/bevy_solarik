@@ -69,6 +69,39 @@ pub fn set_swapchain_interceptor(interceptor: VulkanSwapchainInterceptor) {
     *VULKAN_SWAPCHAIN_INTERCEPTOR.write() = interceptor;
 }
 
+/// Additively register hooks, filling only the fields set in `patch` and keeping
+/// any already-registered proxies. Two providers can coexist on one device
+/// (Streamline owns present markers + DLSS-G resize handling, AMD FFX owns the
+/// swapchain/present proxies); replacing the whole struct made whichever crate
+/// installed last silently disable the other.
+pub fn merge_swapchain_interceptor(patch: VulkanSwapchainInterceptor) {
+    let mut current = VULKAN_SWAPCHAIN_INTERCEPTOR.write();
+    if patch.create_swapchain.is_some() {
+        current.create_swapchain = patch.create_swapchain;
+    }
+    if patch.destroy_swapchain.is_some() {
+        current.destroy_swapchain = patch.destroy_swapchain;
+    }
+    if patch.get_swapchain_images.is_some() {
+        current.get_swapchain_images = patch.get_swapchain_images;
+    }
+    if patch.acquire_next_image.is_some() {
+        current.acquire_next_image = patch.acquire_next_image;
+    }
+    if patch.queue_present.is_some() {
+        current.queue_present = patch.queue_present;
+    }
+    if patch.on_present_start.is_some() {
+        current.on_present_start = patch.on_present_start;
+    }
+    if patch.on_present_end.is_some() {
+        current.on_present_end = patch.on_present_end;
+    }
+    if patch.on_before_swapchain_recreate.is_some() {
+        current.on_before_swapchain_recreate = patch.on_before_swapchain_recreate;
+    }
+}
+
 pub(crate) fn swapchain_interceptor() -> VulkanSwapchainInterceptor {
     *VULKAN_SWAPCHAIN_INTERCEPTOR.read()
 }

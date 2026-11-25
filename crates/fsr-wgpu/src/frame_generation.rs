@@ -580,16 +580,14 @@ pub fn install_presentation(
     install_provider_messages(library);
     if let Some(vulkan) = VulkanPresentation::from_device(device)? {
         *presentation() = Some(Presentation::new(library, Some(vulkan)));
-        wgpu::hal::vulkan::set_swapchain_interceptor(
+        wgpu::hal::vulkan::merge_swapchain_interceptor(
             wgpu::hal::vulkan::VulkanSwapchainInterceptor {
                 create_swapchain: Some(vk_create_swapchain),
                 destroy_swapchain: Some(vk_destroy_swapchain),
                 get_swapchain_images: Some(vk_get_swapchain_images),
                 acquire_next_image: Some(vk_acquire_next_image),
                 queue_present: Some(vk_queue_present),
-                on_present_start: None,
-                on_present_end: None,
-                on_before_swapchain_recreate: None,
+                ..Default::default()
             },
         );
         return Ok(PresentationBackend::Vulkan);
@@ -597,10 +595,11 @@ pub fn install_presentation(
     #[cfg(windows)]
     if crate::dx12::device_ptr(device).is_some() {
         *presentation() = Some(Presentation::new(library, None));
-        let mut hooks = wgpu::hal::dx12::swapchain_hooks();
-        hooks.create_swapchain_for_hwnd = Some(dx12_create_swapchain_for_hwnd);
-        hooks.on_presented = Some(count_present);
-        wgpu::hal::dx12::set_swapchain_hooks(hooks);
+        wgpu::hal::dx12::merge_swapchain_hooks(wgpu::hal::dx12::Dx12SwapchainHooks {
+            create_swapchain_for_hwnd: Some(dx12_create_swapchain_for_hwnd),
+            on_presented: Some(count_present),
+            ..Default::default()
+        });
         return Ok(PresentationBackend::Dx12);
     }
     Err(Error::NoVulkan)

@@ -300,6 +300,12 @@ static VULKAN_INTERPOSED: AtomicBool = AtomicBool::new(false);
 /// `slDLSSGGetState` on the present thread (`on_present_end`).
 static PRESENTED_FRAMES: AtomicU64 = AtomicU64::new(0);
 
+/// Set once a `PCL_MARKER_PRESENT_END` marker has actually been emitted from a
+/// present hook. `slReflexSleep` spins until Reflex observes that marker, so
+/// sleeping before any marker has arrived blocks the render thread for an
+/// unbounded time (observed as a 1-3 FPS stall).
+static PRESENT_MARKERS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Total frames actually presented to the swapchain (real + generated) since
 /// startup, measured synchronously on the present thread via `slDLSSGGetState`.
 pub fn total_presented_frames() -> u64 {
@@ -642,7 +648,7 @@ pub fn install_swapchain_interception() {
     if sl.is_dx12 {
         #[cfg(windows)]
         {
-            wgpu::hal::dx12::set_swapchain_hooks(wgpu::hal::dx12::Dx12SwapchainHooks {
+            wgpu::hal::dx12::merge_swapchain_hooks(wgpu::hal::dx12::Dx12SwapchainHooks {
                 on_swapchain_created: Some(dx12_upgrade_swapchain),
                 on_present_start: Some(on_present_start),
                 on_present_end: Some(on_present_end),
@@ -654,17 +660,13 @@ pub fn install_swapchain_interception() {
         // When `preinit` routed `ash::Entry` through `sl.interposer.dll`,
         // `ash::khr::swapchain::Device` already holds the interposer's own
         // `vkCreateSwapchainKHR`/`vkQueuePresentKHR` proxies — do not double-wrap.
-        // Attach only the present markers (PCL/Reflex).
-        wgpu::hal::vulkan::set_swapchain_interceptor(
+        // Attach only the present markers (PCL/Reflex) and resize notification.
+        wgpu::hal::vulkan::merge_swapchain_interceptor(
             wgpu::hal::vulkan::VulkanSwapchainInterceptor {
-                create_swapchain: None,
-                destroy_swapchain: None,
-                get_swapchain_images: None,
-                acquire_next_image: None,
-                queue_present: None,
                 on_present_start: Some(on_present_start),
                 on_present_end: Some(on_present_end),
                 on_before_swapchain_recreate: Some(on_before_swapchain_recreate),
+                ..Default::default()
             },
         );
         tracing::info!("Streamline Vulkan present-marker hooks installed");
@@ -733,6 +735,7 @@ fn on_present_end() {
             unsafe {
                 let _ = set_marker(PCL_MARKER_PRESENT_END, sl.active_frame_token);
             }
+            PRESENT_MARKERS_ACTIVE.store(true, Ordering::Release);
         }
         // Query `slDLSSGGetState` synchronously on the present thread so we
         // measure the true number of presented frames (real + generated)
@@ -1154,7 +1157,12 @@ pub fn record_frame(
             let _ = set_reflex(&reflex_opts);
         }
     }
-    if enabled && let Some(sleep) = sl.features.reflex_sleep {
+    // Only spin in `slReflexSleep` once present-end markers actually reach
+    // Reflex; without them the sleep never returns and the frame rate collapses.
+    if enabled
+        && PRESENT_MARKERS_ACTIVE.load(Ordering::Acquire)
+        && let Some(sleep) = sl.features.reflex_sleep
+    {
         unsafe {
             let _ = sleep(token);
         }
