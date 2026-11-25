@@ -142,6 +142,7 @@ pub struct Streamline {
     last_constants_frame: Option<u32>,
     last_mode: u32,
     last_num_frames: u32,
+    last_dlssg_opts: DlssGOptions,
     is_dx12: bool,
     native_shutdown: bool,
     // Keep wide-string paths / project id alive for slInit lifetime.
@@ -577,6 +578,7 @@ pub fn attach_device(
         last_constants_frame: None,
         last_mode: DLSSG_MODE_OFF,
         last_num_frames: 0,
+        last_dlssg_opts: DlssGOptions::default(),
         is_dx12,
         native_shutdown: false,
         _plugin_dir_wide: plugin_dir_wide,
@@ -716,7 +718,7 @@ fn on_present_end() {
         {
             let viewport = ViewportHandle::new(0);
             let mut raw_state = DlssGState::default();
-            if unsafe { get_state(&viewport, &mut raw_state, ptr::null()) } == SL_RESULT_OK
+            if unsafe { get_state(&viewport, &mut raw_state, &sl.last_dlssg_opts) } == SL_RESULT_OK
                 && raw_state.num_frames_actually_presented > 0
             {
                 presented = raw_state.num_frames_actually_presented as u64;
@@ -1224,6 +1226,7 @@ pub fn record_frame(
         if res == SL_RESULT_OK {
             sl.last_mode = target_mode;
             sl.last_num_frames = clamped_gen;
+            sl.last_dlssg_opts = opts;
         }
     }
 
