@@ -887,7 +887,7 @@ pub fn evaluate_dlss_rr(
     let viewport = ViewportHandle::new(0);
     let constants = Constants {
         jitter_offset,
-        mvec_scale: [1.0, 1.0],
+        mvec_scale: [-(render_size[0] as f32), -(render_size[1] as f32)],
         reset: if reset { BOOLEAN_TRUE } else { BOOLEAN_FALSE },
         ..Constants::default()
     };
@@ -909,15 +909,17 @@ pub fn evaluate_dlss_rr(
         return Err(Error::Api("slDLSSDSetOptions", opt_res));
     }
 
-    let mut in_res = make_sl_resource(sl.is_dx12, color_in, false);
+    // Solari writes color_in and all RR guide textures via storage compute
+    // passes (`VK_IMAGE_LAYOUT_GENERAL` = 1 on Vulkan).
+    let mut in_res = make_sl_resource(sl.is_dx12, color_in, true);
     let mut out_res = make_sl_resource(sl.is_dx12, color_out, true);
-    let mut depth_res = make_sl_resource(sl.is_dx12, depth, false);
+    let mut depth_res = make_sl_resource(sl.is_dx12, depth, true);
     let mut mv_res = make_sl_resource(sl.is_dx12, motion_vectors, false);
-    let mut diff_res = make_sl_resource(sl.is_dx12, diffuse_albedo, false);
-    let mut spec_res = make_sl_resource(sl.is_dx12, specular_albedo, false);
-    let mut norm_res = make_sl_resource(sl.is_dx12, normal_roughness, false);
+    let mut diff_res = make_sl_resource(sl.is_dx12, diffuse_albedo, true);
+    let mut spec_res = make_sl_resource(sl.is_dx12, specular_albedo, true);
+    let mut norm_res = make_sl_resource(sl.is_dx12, normal_roughness, true);
     let mut spec_mv_res =
-        specular_motion_vectors.and_then(|v| make_sl_resource(sl.is_dx12, v, false));
+        specular_motion_vectors.and_then(|v| make_sl_resource(sl.is_dx12, v, true));
     let mut exp_res = exposure.and_then(|v| make_sl_resource(sl.is_dx12, v, false));
 
     let render_ext = Extent {
