@@ -17,8 +17,8 @@ use bevy_math::{Mat4, UVec2, Vec2, Vec4Swizzles};
 use bevy_render::{
     camera::{MipBias, TemporalJitter},
     diagnostic::RecordDiagnostics,
-    render_resource::TextureUsages,
-    renderer::{RenderContext, ViewQuery},
+    render_resource::{CommandEncoderDescriptor, TextureUsages},
+    renderer::{RenderContext, RenderDevice, ViewQuery},
     view::{ExtractedView, ViewTarget},
 };
 use dlss_wgpu::DlssPerfQualityMode;
@@ -148,6 +148,7 @@ pub fn dlss_super_resolution_streamline(
         &ViewPrepassTextures,
     )>,
     frame_count: Res<FrameCount>,
+    render_device: Res<RenderDevice>,
     mut ctx: RenderContext,
 ) {
     let (extracted_view, dlss, resolution_override, temporal_jitter, view_target, prepass) =
@@ -163,6 +164,9 @@ pub fn dlss_super_resolution_streamline(
     let diagnostics = diagnostics.as_deref();
     let time_span = diagnostics.time_span(ctx.command_encoder(), "dlss_super_resolution_sl");
 
+    let mut sl_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("streamline_dlss_sr"),
+    });
     if let Err(err) = solarik_streamline_wgpu::evaluate_dlss_sr(
         frame_count.0,
         to_sl_mode(dlss.perf_quality_mode),
@@ -175,10 +179,11 @@ pub fn dlss_super_resolution_streamline(
         &depth.texture.default_view,
         &motion_vectors.texture.default_view,
         None,
-        ctx.command_encoder(),
+        &mut sl_encoder,
     ) {
         tracing::warn!(%err, "Streamline DLSS Super Resolution evaluation failed");
     }
+    ctx.add_command_buffer(sl_encoder.finish());
 
     time_span.end(ctx.command_encoder());
 }
@@ -194,6 +199,7 @@ pub fn dlss_ray_reconstruction_streamline(
         &ViewDlssRayReconstructionTextures,
     )>,
     frame_count: Res<FrameCount>,
+    render_device: Res<RenderDevice>,
     mut ctx: RenderContext,
 ) {
     let (
@@ -219,6 +225,9 @@ pub fn dlss_ray_reconstruction_streamline(
     let diagnostics = diagnostics.as_deref();
     let time_span = diagnostics.time_span(ctx.command_encoder(), "dlss_ray_reconstruction_sl");
 
+    let mut sl_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("streamline_dlss_rr"),
+    });
     if let Err(err) = solarik_streamline_wgpu::evaluate_dlss_rr(
         frame_count.0,
         to_sl_mode(dlss.perf_quality_mode),
@@ -237,10 +246,11 @@ pub fn dlss_ray_reconstruction_streamline(
         &rr_textures.normal_roughness.default_view,
         Some(&rr_textures.specular_motion_vectors.default_view),
         None,
-        ctx.command_encoder(),
+        &mut sl_encoder,
     ) {
         tracing::warn!(%err, "Streamline DLSS Ray Reconstruction evaluation failed");
     }
+    ctx.add_command_buffer(sl_encoder.finish());
 
     time_span.end(ctx.command_encoder());
 }
