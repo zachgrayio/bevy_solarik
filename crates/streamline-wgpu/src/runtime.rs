@@ -139,6 +139,7 @@ pub struct Streamline {
     features: FeatureExports,
     capabilities: FrameGenCapabilities,
     active_frame_token: *mut BaseStructure,
+    last_constants_frame: Option<u32>,
     last_mode: u32,
     last_num_frames: u32,
     is_dx12: bool,
@@ -563,6 +564,7 @@ pub fn attach_device(
         features,
         capabilities,
         active_frame_token: ptr::null_mut(),
+        last_constants_frame: None,
         last_mode: DLSSG_MODE_OFF,
         last_num_frames: 0,
         is_dx12,
@@ -901,14 +903,17 @@ pub fn evaluate_dlss_rr(
     sl.active_frame_token = token;
 
     let viewport = ViewportHandle::new(0);
-    let constants = Constants {
-        jitter_offset,
-        mvec_scale: [-(render_size[0] as f32), -(render_size[1] as f32)],
-        reset: if reset { BOOLEAN_TRUE } else { BOOLEAN_FALSE },
-        ..Constants::default()
-    };
-    unsafe {
-        let _ = (sl.core.sl_set_constants)(&constants, token, &viewport);
+    if sl.last_constants_frame != Some(frame_index) {
+        let constants = Constants {
+            jitter_offset,
+            mvec_scale: [-(render_size[0] as f32), -(render_size[1] as f32)],
+            reset: if reset { BOOLEAN_TRUE } else { BOOLEAN_FALSE },
+            ..Constants::default()
+        };
+        unsafe {
+            let _ = (sl.core.sl_set_constants)(&constants, token, &viewport);
+        }
+        sl.last_constants_frame = Some(frame_index);
     }
 
     let opts = DlssDOptions {
@@ -1088,8 +1093,11 @@ pub fn record_frame(
     }
 
     let viewport = ViewportHandle::new(0);
-    unsafe {
-        let _ = (sl.core.sl_set_constants)(constants, token, &viewport);
+    if sl.last_constants_frame != Some(frame_index) {
+        unsafe {
+            let _ = (sl.core.sl_set_constants)(constants, token, &viewport);
+        }
+        sl.last_constants_frame = Some(frame_index);
     }
 
     // Tag Depth, MotionVectors, and HUDLessColor for this frame token.
