@@ -143,6 +143,7 @@ pub struct Streamline {
     last_mode: u32,
     last_num_frames: u32,
     last_dlssg_opts: DlssGOptions,
+    resize_cooldown_frames: u32,
     is_dx12: bool,
     native_shutdown: bool,
     // Keep wide-string paths / project id alive for slInit lifetime.
@@ -579,6 +580,7 @@ pub fn attach_device(
         last_mode: DLSSG_MODE_OFF,
         last_num_frames: 0,
         last_dlssg_opts: DlssGOptions::default(),
+        resize_cooldown_frames: 0,
         is_dx12,
         native_shutdown: false,
         _plugin_dir_wide: plugin_dir_wide,
@@ -704,6 +706,7 @@ fn on_before_swapchain_recreate() {
         sl.last_mode = DLSSG_MODE_OFF;
         sl.last_num_frames = 0;
         sl.last_dlssg_opts = off;
+        sl.resize_cooldown_frames = 4;
         tracing::info!("Streamline DLSS-G paused for Vulkan swapchain resize");
     }
 }
@@ -1107,6 +1110,15 @@ pub fn record_frame(
 ) -> Result<FrameGenState, Error> {
     let mut guard = global_slot().lock().unwrap();
     let sl = guard.as_mut().ok_or(Error::NotInitialized)?;
+
+    if sl.resize_cooldown_frames > 0 {
+        sl.resize_cooldown_frames -= 1;
+        return Ok(FrameGenState {
+            max_generated_frames: sl.capabilities.max_generated_frames,
+            num_frames_actually_presented: 1,
+            ..Default::default()
+        });
+    }
 
     let enabled = num_frames_to_generate > 0 && sl.capabilities.dlss_g_supported;
     if !enabled && sl.last_mode == DLSSG_MODE_OFF {

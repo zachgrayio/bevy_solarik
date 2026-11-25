@@ -261,15 +261,13 @@ impl Surface for NativeSurface {
         }
 
         let interceptor = crate::vulkan::swapchain_interceptor();
-        if old_swapchain != vk::SwapchainKHR::null() {
-            if let Some(before_recreate) = interceptor.on_before_swapchain_recreate {
-                before_recreate();
-            }
-            if crate::vulkan::vulkan_entry_library().is_some() {
-                // Drain Streamline DLSS-G's in-flight optical-flow/present work before
-                // recreating the swapchain on resize/fullscreen.
-                let _ = unsafe { device.shared.raw.device_wait_idle() };
-            }
+        if let Some(before_recreate) = interceptor.on_before_swapchain_recreate {
+            before_recreate();
+        }
+        if crate::vulkan::vulkan_entry_library().is_some() {
+            // Drain Streamline DLSS-G's in-flight optical-flow/present work before
+            // creating/recreating the swapchain on resize/fullscreen.
+            let _ = unsafe { device.shared.raw.device_wait_idle() };
         }
         let result = {
             profiling::scope!("vkCreateSwapchainKHR");
