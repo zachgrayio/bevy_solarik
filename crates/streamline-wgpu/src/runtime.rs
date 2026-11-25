@@ -1176,27 +1176,34 @@ pub fn record_frame(
         hud_less_buffer_format: hudless_fmt,
         ..DlssGOptions::default()
     };
+    let mut out_state = FrameGenState {
+        max_generated_frames: sl.capabilities.max_generated_frames,
+        num_frames_actually_presented: if enabled { 1 + clamped_gen } else { 1 },
+        ..Default::default()
+    };
+    let mode_changed = sl.last_mode != target_mode || sl.last_num_frames != clamped_gen;
     if let Some(set_opts) = sl.features.dlss_g_set_options
-        && (sl.last_mode != target_mode || sl.last_num_frames != clamped_gen)
+        && mode_changed
     {
         let res = unsafe { set_opts(&viewport, &opts) };
         if res == SL_RESULT_OK {
             sl.last_mode = target_mode;
             sl.last_num_frames = clamped_gen;
         }
-    }
-
-    let mut out_state = FrameGenState {
-        max_generated_frames: sl.capabilities.max_generated_frames,
-        ..Default::default()
-    };
-    if let Some(get_state) = sl.features.dlss_g_get_state {
-        let mut raw_state = DlssGState::default();
-        if unsafe { get_state(&viewport, &mut raw_state, &opts) } == SL_RESULT_OK {
-            out_state.status = raw_state.status;
-            out_state.num_frames_actually_presented = raw_state.num_frames_actually_presented;
-            if raw_state.num_frames_to_generate_max > 0 {
-                out_state.max_generated_frames = raw_state.num_frames_to_generate_max;
+        // Only query `slDLSSGGetState` on mode transitions, never every frame
+        // from a worker thread (avoids racing with swapchain resize/fullscreen
+        // on the present thread).
+        if let Some(get_state) = sl.features.dlss_g_get_state {
+            let mut raw_state = DlssGState::default();
+            if unsafe { get_state(&viewport, &mut raw_state, &opts) } == SL_RESULT_OK {
+                out_state.status = raw_state.status;
+                if raw_state.num_frames_actually_presented > 0 {
+                    out_state.num_frames_actually_presented =
+                        raw_state.num_frames_actually_presented;
+                }
+                if raw_state.num_frames_to_generate_max > 0 {
+                    out_state.max_generated_frames = raw_state.num_frames_to_generate_max;
+                }
             }
         }
     }
