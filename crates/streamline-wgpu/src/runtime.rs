@@ -706,7 +706,7 @@ fn on_before_swapchain_recreate() {
         sl.last_mode = DLSSG_MODE_OFF;
         sl.last_num_frames = 0;
         sl.last_dlssg_opts = off;
-        sl.resize_cooldown_frames = 4;
+        sl.resize_cooldown_frames = 30;
         tracing::info!("Streamline DLSS-G paused for Vulkan swapchain resize");
     }
 }
