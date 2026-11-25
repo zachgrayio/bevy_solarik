@@ -208,18 +208,45 @@ impl Surface for NativeSurface {
             raw_view_formats.push(original_format);
         }
 
+        let mut swapchain_format = original_format;
+        let mut image_usage = conv::map_texture_usage(config.usage);
+        if crate::vulkan::vulkan_entry_library().is_some() {
+            // Streamline `sl.dlss_g` rejects SRGB swapchain image formats
+            // (`slHookVkCreateSwapchainKHR: SRGB format cannot be used for
+            // swap-chain back buffers when using sl.dlss_g`) and requires
+            // STORAGE usage. Create a mutable UNORM swapchain with the SRGB
+            // format in the view format list so wgpu's SRGB views keep exact
+            // color space while DLSS-G can run compute/optical-flow on it.
+            let unorm = match original_format {
+                vk::Format::B8G8R8A8_SRGB => Some(vk::Format::B8G8R8A8_UNORM),
+                vk::Format::R8G8B8A8_SRGB => Some(vk::Format::R8G8B8A8_UNORM),
+                _ => None,
+            };
+            if let Some(unorm) = unorm {
+                swapchain_format = unorm;
+                raw_flags |= vk::SwapchainCreateFlagsKHR::MUTABLE_FORMAT;
+                if !raw_view_formats.contains(&original_format) {
+                    raw_view_formats.push(original_format);
+                }
+                if !raw_view_formats.contains(&unorm) {
+                    raw_view_formats.push(unorm);
+                }
+            }
+            image_usage |= vk::ImageUsageFlags::STORAGE;
+        }
+
         let mut info = vk::SwapchainCreateInfoKHR::default()
             .flags(raw_flags)
             .surface(self.raw)
             .min_image_count(config.maximum_frame_latency + 1) // TODO: https://github.com/gfx-rs/wgpu/issues/2869
-            .image_format(original_format)
+            .image_format(swapchain_format)
             .image_color_space(color_space)
             .image_extent(vk::Extent2D {
                 width: config.extent.width,
                 height: config.extent.height,
             })
             .image_array_layers(config.extent.depth_or_array_layers)
-            .image_usage(conv::map_texture_usage(config.usage))
+            .image_usage(image_usage)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
             .composite_alpha(conv::map_composite_alpha_mode(config.composite_alpha_mode))
