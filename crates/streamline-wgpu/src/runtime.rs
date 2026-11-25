@@ -8,7 +8,7 @@ use std::{
     ptr,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -293,6 +293,16 @@ static PRE_INIT: OnceLock<Mutex<Option<PreInit>>> = OnceLock::new();
 /// Whether [`preinit`] routed Vulkan entry points through the interposer, so its
 /// swapchain proxies can own present for DLSS-G.
 static VULKAN_INTERPOSED: AtomicBool = AtomicBool::new(false);
+
+/// Monotonic count of frames actually presented to the swapchain as reported by
+/// `slDLSSGGetState` on the present thread (`on_present_end`).
+static PRESENTED_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Total frames actually presented to the swapchain (real + generated) since
+/// startup, measured synchronously on the present thread via `slDLSSGGetState`.
+pub fn total_presented_frames() -> u64 {
+    PRESENTED_FRAMES.load(Ordering::Relaxed)
+}
 
 fn pre_init_slot() -> &'static Mutex<Option<PreInit>> {
     PRE_INIT.get_or_init(|| Mutex::new(None))
@@ -689,12 +699,30 @@ fn on_present_start() {
 fn on_present_end() {
     if let Ok(guard) = global_slot().try_lock()
         && let Some(sl) = guard.as_ref()
-        && !sl.active_frame_token.is_null()
-        && let Some(set_marker) = sl.features.pcl_set_marker
     {
-        unsafe {
-            let _ = set_marker(PCL_MARKER_PRESENT_END, sl.active_frame_token);
+        if !sl.active_frame_token.is_null()
+            && let Some(set_marker) = sl.features.pcl_set_marker
+        {
+            unsafe {
+                let _ = set_marker(PCL_MARKER_PRESENT_END, sl.active_frame_token);
+            }
         }
+        // Query `slDLSSGGetState` synchronously on the present thread so we
+        // measure the true number of presented frames (real + generated)
+        // without racing with worker threads.
+        let mut presented = 1u64;
+        if sl.last_mode == DLSSG_MODE_ON
+            && let Some(get_state) = sl.features.dlss_g_get_state
+        {
+            let viewport = ViewportHandle::new(0);
+            let mut raw_state = DlssGState::default();
+            if unsafe { get_state(&viewport, &mut raw_state, ptr::null()) } == SL_RESULT_OK
+                && raw_state.num_frames_actually_presented > 0
+            {
+                presented = raw_state.num_frames_actually_presented as u64;
+            }
+        }
+        PRESENTED_FRAMES.fetch_add(presented, Ordering::Relaxed);
     }
 }
 
@@ -1100,11 +1128,18 @@ pub fn record_frame(
         sl.last_constants_frame = Some(frame_index);
     }
 
-    // Tag Depth, MotionVectors, and HUDLessColor for this frame token.
+    // Tag Depth and MotionVectors for this frame token.
+    // On Vulkan, omit optional HUDLessColor so `sl.dlss_g` reads directly from
+    // the swapchain backbuffer (guaranteed exact swapchain extent & PRESENT_SRC
+    // layout at vkQueuePresentKHR, avoiding resize/fullscreen mismatches).
     if enabled {
         let mut depth_res = make_sl_resource(sl.is_dx12, depth, false);
         let mut mv_res = make_sl_resource(sl.is_dx12, motion_vectors, false);
-        let mut color_res = make_sl_resource(sl.is_dx12, hudless_color, false);
+        let mut color_res = if sl.is_dx12 {
+            make_sl_resource(true, hudless_color, false)
+        } else {
+            None
+        };
         let render_extent = Extent {
             top: 0,
             left: 0,
@@ -1176,7 +1211,7 @@ pub fn record_frame(
         hud_less_buffer_format: hudless_fmt,
         ..DlssGOptions::default()
     };
-    let mut out_state = FrameGenState {
+    let out_state = FrameGenState {
         max_generated_frames: sl.capabilities.max_generated_frames,
         num_frames_actually_presented: if enabled { 1 + clamped_gen } else { 1 },
         ..Default::default()
@@ -1189,22 +1224,6 @@ pub fn record_frame(
         if res == SL_RESULT_OK {
             sl.last_mode = target_mode;
             sl.last_num_frames = clamped_gen;
-        }
-        // Only query `slDLSSGGetState` on mode transitions, never every frame
-        // from a worker thread (avoids racing with swapchain resize/fullscreen
-        // on the present thread).
-        if let Some(get_state) = sl.features.dlss_g_get_state {
-            let mut raw_state = DlssGState::default();
-            if unsafe { get_state(&viewport, &mut raw_state, &opts) } == SL_RESULT_OK {
-                out_state.status = raw_state.status;
-                if raw_state.num_frames_actually_presented > 0 {
-                    out_state.num_frames_actually_presented =
-                        raw_state.num_frames_actually_presented;
-                }
-                if raw_state.num_frames_to_generate_max > 0 {
-                    out_state.max_generated_frames = raw_state.num_frames_to_generate_max;
-                }
-            }
         }
     }
 

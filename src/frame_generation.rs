@@ -150,6 +150,18 @@ pub fn install_vulkan_preinit(project_id: &str) {
 #[cfg(not(feature = "dlss_frame_generation"))]
 pub fn install_vulkan_preinit(_project_id: &str) {}
 
+/// Total frames actually presented to the swapchain (real + generated),
+/// measured synchronously on the present thread via `slDLSSGGetState`.
+#[cfg(feature = "dlss_frame_generation")]
+pub fn total_presented_frames() -> u64 {
+    solarik_streamline_wgpu::total_presented_frames()
+}
+
+#[cfg(not(feature = "dlss_frame_generation"))]
+pub fn total_presented_frames() -> u64 {
+    0
+}
+
 /// Plugin installing Streamline DLSS-G + Reflex and AMD FSR Frame Generation.
 #[derive(Clone, Debug)]
 pub struct FrameGenerationPlugin {
