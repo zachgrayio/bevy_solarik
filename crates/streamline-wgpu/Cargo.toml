@@ -13,6 +13,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan"] }
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D12"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "dx12"] }
 
 [lints.rust]

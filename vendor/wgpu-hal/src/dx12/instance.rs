@@ -148,6 +148,7 @@ impl crate::Instance for super::Instance {
                 };
 
                 Ok(super::Surface {
+                    stamp_source: Default::default(),
                     factory: self.factory.clone(),
                     factory_media: self.factory_media.clone(),
                     target,

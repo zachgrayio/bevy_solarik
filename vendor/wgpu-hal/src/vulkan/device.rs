@@ -1295,6 +1295,7 @@ impl crate::Device for super::Device {
             _layers: layers,
             format: desc.format,
             raw_format,
+            subresource_range: vk_info.subresource_range,
             base_mip_level: desc.range.base_mip_level,
             dimension: desc.dimension,
             texture_identity: texture.identity,

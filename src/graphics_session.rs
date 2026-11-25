@@ -10,17 +10,32 @@ use bevy_app::{App, AppExit};
 /// this owner. Retained native SDK feature leases can safely extend it further. Applications
 /// must not detach unleased renderer/device work beyond their App's own shutdown barrier.
 pub fn run_app(build: impl FnOnce() -> App) -> AppExit {
-    #[cfg(all(windows, feature = "dx12_ngx_init"))]
+    #[cfg(all(
+        windows,
+        any(feature = "dx12_ngx_init", feature = "dlss_frame_generation")
+    ))]
     let session = runtime::registry().acquire(runtime::RuntimeSession::default);
     let mut app = build();
+    tracing::info!("Native graphics session: entering runner");
     let exit = app.run();
+    tracing::info!(?exit, "Native graphics session: runner returned");
     drop(app);
-    #[cfg(all(windows, feature = "dx12_ngx_init"))]
+    tracing::info!("Native graphics session: App released");
+    #[cfg(all(
+        windows,
+        any(feature = "dx12_ngx_init", feature = "dlss_frame_generation")
+    ))]
     drop(session);
     exit
 }
 
-#[cfg(any(test, all(windows, feature = "dx12_ngx_init")))]
+#[cfg(any(
+    test,
+    all(
+        windows,
+        any(feature = "dx12_ngx_init", feature = "dlss_frame_generation")
+    )
+))]
 mod lifetime {
     use std::sync::{Arc, Condvar, Mutex, Weak};
 
@@ -138,6 +153,10 @@ mod lifetime {
         }
     }
 
+    pub(super) fn needs_gpu(direct_ngx: bool, streamline: bool) -> bool {
+        direct_ngx || streamline
+    }
+
     pub(super) fn shutdown_in_order<G, L>(
         gpu: G,
         stop_provider: impl FnOnce() -> L,
@@ -145,24 +164,28 @@ mod lifetime {
     ) {
         let code = stop_provider();
         stop_ngx();
+        tracing::info!("Native graphics session: final GPU release begin");
         drop(gpu);
-        // Provider code remains loaded through the final owned queue/device destruction.
+        tracing::info!("Native graphics session: final GPU release end; core release begin");
+        // Only core/interposer code remains loaded through queue/device destruction;
+        // feature/model DLLs must detach in SDK shutdown while the GPU is alive.
         drop(code);
+        tracing::info!("Native graphics session: core release end");
     }
 }
 
-#[cfg(all(windows, feature = "dx12_ngx_init"))]
+#[cfg(all(
+    windows,
+    any(feature = "dx12_ngx_init", feature = "dlss_frame_generation")
+))]
 mod runtime {
-    use super::lifetime::{Registry, shutdown_in_order};
+    use super::lifetime::{Registry, needs_gpu, shutdown_in_order};
     use bevy_app::{App, Plugin};
     use bevy_render::{
         RenderApp,
         renderer::{RenderDevice, RenderQueue},
     };
-    use std::{
-        any::Any,
-        sync::{Arc, Mutex, OnceLock},
-    };
+    use std::sync::{Arc, Mutex, OnceLock};
 
     struct GpuKeepalive {
         queue: Option<RenderQueue>,
@@ -177,29 +200,17 @@ mod runtime {
     struct RuntimeCode {
         #[cfg(feature = "dlss_frame_generation")]
         streamline: Option<solarik_streamline_wgpu::RetiredRuntime>,
-        modules: Vec<libloading::Library>,
     }
     impl RuntimeCode {
         fn shutdown_provider() -> Self {
-            let mut modules = Vec::new();
-            for name in [
-                "_nvngx.dll",
-                "nvngx_dlss.dll",
-                "nvngx_dlssd.dll",
-                "nvngx_dlssg.dll",
-            ] {
-                // Retain only modules already initialized by the application. This never
-                // loads a new provider or permanently pins native graphics code.
-                if let Ok(module) = libloading::os::windows::Library::open_already_loaded(name) {
-                    modules.push(module.into());
-                }
-            }
+            // SDKs own feature/model DLL references and release them during native
+            // shutdown while the queue/device keepalive still exists. Retain only
+            // Streamline's core interposer past GPU destruction.
             #[cfg(feature = "dlss_frame_generation")]
             let streamline = solarik_streamline_wgpu::shutdown_retaining_runtime();
             Self {
                 #[cfg(feature = "dlss_frame_generation")]
                 streamline,
-                modules,
             }
         }
     }
@@ -207,7 +218,6 @@ mod runtime {
         fn drop(&mut self) {
             #[cfg(feature = "dlss_frame_generation")]
             drop(self.streamline.take());
-            self.modules.clear();
         }
     }
     #[derive(Default)]
@@ -233,11 +243,12 @@ mod runtime {
     }
     impl Drop for RuntimeSession {
         fn drop(&mut self) {
+            tracing::info!("Native graphics session: owner cleanup begin");
             let gpu = self.gpu.get_mut().unwrap().take();
-            if gpu.is_none() && !crate::dx12_ngx_init::ngx_d3d12_ready() {
-                return;
-            }
+            // Always retire Streamline, including successful preinit followed by a failed
+            // App/device build. No attached runtime or direct NGX readiness is required.
             if let Some(gpu) = &gpu {
+                tracing::info!("Native graphics session: tracked GPU wait begin");
                 if let Err(error) = gpu
                     .device
                     .as_ref()
@@ -246,24 +257,44 @@ mod runtime {
                 {
                     tracing::warn!(?error, "GPU wait failed during native runtime shutdown");
                 }
+                tracing::info!("Native graphics session: tracked GPU wait end");
             }
+            #[cfg(feature = "dx12_ngx_init")]
             let bootstrap = crate::dx12_ngx_init::prepare_shutdown();
             tracing::info!(
                 "Native graphics session: provider shutdown after feature/parameter destructors"
             );
-            shutdown_in_order(gpu, RuntimeCode::shutdown_provider, || drop(bootstrap));
+            shutdown_in_order(gpu, RuntimeCode::shutdown_provider, || {
+                #[cfg(feature = "dx12_ngx_init")]
+                drop(bootstrap);
+            });
         }
     }
     pub(super) fn registry() -> &'static Arc<Registry<RuntimeSession>> {
         static REGISTRY: OnceLock<Arc<Registry<RuntimeSession>>> = OnceLock::new();
         REGISTRY.get_or_init(|| Arc::new(Registry::new()))
     }
+    fn native_ready() -> bool {
+        #[cfg(feature = "dx12_ngx_init")]
+        let direct = crate::dx12_ngx_init::ngx_d3d12_ready();
+        #[cfg(not(feature = "dx12_ngx_init"))]
+        let direct = false;
+        #[cfg(feature = "dlss_frame_generation")]
+        let streamline = solarik_streamline_wgpu::Streamline::is_initialized();
+        #[cfg(not(feature = "dlss_frame_generation"))]
+        let streamline = false;
+        needs_gpu(direct, streamline)
+    }
     pub(crate) fn retain(app: &mut App) -> bool {
-        if !crate::dx12_ngx_init::ngx_d3d12_ready() {
+        if !native_ready() {
             return false;
         }
         let Some(render) = app.get_sub_app(RenderApp) else {
-            return false;
+            // A later-registered SessionPlugin can clean up after pipelined rendering
+            // transferred RenderApp. FrameGenerationPlugin::finish already retained it.
+            return registry()
+                .acquire_existing()
+                .is_some_and(|session| session.get().gpu.lock().unwrap().is_some());
         };
         let Some(device) = render.world().get_resource::<RenderDevice>().cloned() else {
             return false;
@@ -273,17 +304,20 @@ mod runtime {
         };
         let session = registry().acquire_existing().expect("D3D12 NGX applications must use bevy_solarik::run_app so native code outlives the complete App");
         session.get().retain_gpu(device, queue);
-        let owner: Arc<dyn Any + Send + Sync> = session;
-        bevy_anti_alias::dlss::retain_dlss_runtime(app, owner);
+        #[cfg(feature = "dx12_ngx_init")]
+        {
+            let owner: Arc<dyn std::any::Any + Send + Sync> = session;
+            bevy_anti_alias::dlss::retain_dlss_runtime(app, owner);
+        }
         true
     }
     pub(crate) struct SessionPlugin;
     impl Plugin for SessionPlugin {
         fn build(&self, _: &mut App) {}
         fn cleanup(&self, app: &mut App) {
-            // Installed by the raw-init seam before DefaultPlugins. All finish hooks have
-            // completed; cleanup has not yet transferred RenderApp to its rendering thread.
-            if crate::dx12_ngx_init::ngx_d3d12_ready() {
+            // All finish hooks have completed; cleanup has not yet transferred
+            // RenderApp to its rendering thread. Either native provider needs ownership.
+            if native_ready() {
                 assert!(
                     retain(app),
                     "NGX session must retain its live renderer before pipelined transfer"
@@ -292,12 +326,15 @@ mod runtime {
         }
     }
 }
-#[cfg(all(windows, feature = "dx12_ngx_init"))]
+#[cfg(all(
+    windows,
+    any(feature = "dx12_ngx_init", feature = "dlss_frame_generation")
+))]
 pub(crate) use runtime::{SessionPlugin, retain};
 
 #[cfg(test)]
 mod tests {
-    use super::lifetime::{Registry, shutdown_in_order};
+    use super::lifetime::{Registry, needs_gpu, shutdown_in_order};
     use std::sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -334,7 +371,7 @@ mod tests {
                     if self.provider {
                         self.log.lock().unwrap().push("sl_shutdown");
                     }
-                    Tag("dll_unload", Arc::clone(&self.log))
+                    Tag("core_interposer_unload", Arc::clone(&self.log))
                 },
                 || {
                     self.log.lock().unwrap().push("ngx_shutdown");
@@ -420,11 +457,116 @@ mod tests {
                     if provider {
                         expected.push("sl_shutdown");
                     }
-                    expected.extend(["ngx_shutdown", "queue", "device", "dll_unload"]);
+                    expected.extend(["ngx_shutdown", "queue", "device", "core_interposer_unload"]);
                     assert_eq!(*log.lock().unwrap(), expected);
                 }
             }
         }
+    }
+
+    #[test]
+    fn native_provider_flags_retain_without_capability_or_legacy_ngx() {
+        for direct in [false, true] {
+            for streamline in [false, true] {
+                assert_eq!(needs_gpu(direct, streamline), direct || streamline);
+            }
+        }
+    }
+
+    #[test]
+    fn streamline_only_and_preinit_failure_cleanup_once_after_app() {
+        for initialized_device in [false, true] {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let registry = Arc::new(Registry::new());
+            let outer = registry.acquire(|| Tag("outer_cleanup", Arc::clone(&log)));
+            let app = Tag("app", Arc::clone(&log));
+            let gpu = initialized_device.then(|| MockGpu {
+                queue: Some(Tag("queue", Arc::clone(&log))),
+                device: Some(Tag("device", Arc::clone(&log))),
+            });
+            drop(app);
+            shutdown_in_order(
+                gpu,
+                || {
+                    log.lock().unwrap().push("sl_shutdown");
+                    Tag("core_interposer_unload", Arc::clone(&log))
+                },
+                || {}, // No direct NGX bootstrap or SDK shutdown in this configuration.
+            );
+            drop(outer);
+            assert!(registry.acquire_existing().is_none());
+            let expected = if initialized_device {
+                vec![
+                    "app",
+                    "sl_shutdown",
+                    "queue",
+                    "device",
+                    "core_interposer_unload",
+                    "outer_cleanup",
+                ]
+            } else {
+                vec![
+                    "app",
+                    "sl_shutdown",
+                    "core_interposer_unload",
+                    "outer_cleanup",
+                ]
+            };
+            assert_eq!(*log.lock().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn sdk_feature_dlls_detach_before_gpu_but_core_interposer_outlives_gpu() {
+        for direct in [false, true] {
+            for streamline in [false, true] {
+                if !needs_gpu(direct, streamline) {
+                    continue;
+                }
+                let log = Arc::new(Mutex::new(Vec::new()));
+                let gpu = MockGpu {
+                    queue: Some(Tag("queue", Arc::clone(&log))),
+                    device: Some(Tag("device", Arc::clone(&log))),
+                };
+                shutdown_in_order(
+                    gpu,
+                    || {
+                        if streamline {
+                            log.lock().unwrap().push("sl_shutdown");
+                            drop(Tag("sl_feature_dll_detach", Arc::clone(&log)));
+                        }
+                        streamline.then(|| Tag("core_interposer_unload", Arc::clone(&log)))
+                    },
+                    || {
+                        if direct {
+                            log.lock().unwrap().push("ngx_shutdown");
+                            drop(Tag("ngx_model_dll_detach", Arc::clone(&log)));
+                        }
+                    },
+                );
+                let mut expected = Vec::new();
+                if streamline {
+                    expected.extend(["sl_shutdown", "sl_feature_dll_detach"]);
+                }
+                if direct {
+                    expected.extend(["ngx_shutdown", "ngx_model_dll_detach"]);
+                }
+                expected.extend(["queue", "device"]);
+                if streamline {
+                    expected.push("core_interposer_unload");
+                }
+                assert_eq!(*log.lock().unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn no_runtime_cleanup_does_not_create_a_session() {
+        let registry: Arc<Registry<()>> = Arc::new(Registry::new());
+        assert!(registry.acquire_existing().is_none());
+        assert!(!needs_gpu(false, false));
+        shutdown_in_order(None::<MockGpu>, || None::<Tag>, || {});
+        assert!(registry.acquire_existing().is_none());
     }
 
     #[test]

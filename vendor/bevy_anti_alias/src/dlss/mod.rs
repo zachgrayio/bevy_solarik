@@ -15,6 +15,7 @@
 //! 6. Custom rendering code, including third party crates, should account for the optional `MainPassResolutionOverride` to work with DLSS (see the `custom_render_phase` example)
 
 mod extract;
+mod newprivateprobe;
 mod node;
 mod prepare;
 mod streamline;
@@ -177,10 +178,8 @@ impl Plugin for DlssPlugin {
         // instead of direct NGX (`dlss_wgpu`) whenever Streamline owns the device
         // for DLSS-G: on interposed Windows Vulkan it created the `VkDevice`, and
         // on Windows DX12 it upgraded the swapchain via `slUpgradeInterface`.
-        // Running both providers against one device lets each `slEvaluateFeature`
-        // and each `dlss_wgpu` render serialize on NVIDIA's NGX lock (measured
-        // 2-7 FPS on DX12 versus ~110 FPS with Streamline alone), so exactly one
-        // provider owns super resolution and ray reconstruction per device.
+        // Use a single SR/RR evaluation provider per device. Runtime initialization
+        // alone is not evidence of performance or successful frame generation.
         let streamline_owns_device = if is_vulkan {
             solarik_streamline_wgpu::is_vulkan_interposed()
         } else {
@@ -200,6 +199,11 @@ impl Plugin for DlssPlugin {
                         app.insert_resource(DlssRayReconstructionSupported);
                     }
                     app.sub_app_mut(RenderApp)
+                        .init_resource::<newprivateprobe::RrProbe>()
+                        .add_systems(
+                            Render,
+                            newprivateprobe::readback.in_set(RenderSystems::Cleanup),
+                        )
                         .add_systems(
                             ExtractSchedule,
                             (
@@ -228,7 +232,7 @@ impl Plugin for DlssPlugin {
                     info!(
                         dlss_sr = caps.dlss_sr_supported,
                         dlss_rr = caps.dlss_rr_supported,
-                        "DLSS SR/RR enabled via Streamline on interposed Vulkan"
+                        "DLSS SR/RR enabled via Streamline"
                     );
                     return;
                 }
@@ -453,6 +457,93 @@ impl DlssFeature for DlssRayReconstructionFeature {
             device.wgpu_device(),
             queue.deref(),
         )
+    }
+}
+
+/// Optional producer/Streamline handshake for ray reconstruction guides.
+///
+/// Producers mark a frame ready only after recording every guide write, before the
+/// RR node runs. Without this component, external producers retain responsibility
+/// for supplying initialized, current-frame guides. Readiness records CPU command
+/// recording, not GPU completion; render graph submission order remains required.
+#[derive(Component)]
+pub struct DlssRayReconstructionGuideStatus {
+    produced_frame: std::sync::atomic::AtomicU64,
+    evaluated_frame: std::sync::atomic::AtomicU64,
+}
+
+impl Default for DlssRayReconstructionGuideStatus {
+    fn default() -> Self {
+        Self {
+            produced_frame: std::sync::atomic::AtomicU64::new(u64::MAX),
+            evaluated_frame: std::sync::atomic::AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+impl DlssRayReconstructionGuideStatus {
+    /// Publish completion of all guide command recording for this frame.
+    pub fn mark_ready(&self, frame: u32) {
+        self.produced_frame
+            .store(u64::from(frame), std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the producer recorded all guides for this exact frame.
+    pub fn is_ready(&self, frame: u32) -> bool {
+        self.produced_frame
+            .load(std::sync::atomic::Ordering::Acquire)
+            == u64::from(frame)
+    }
+
+    /// Reset native history on the first evaluation or after an evaluation gap.
+    pub fn reset_needed(&self, frame: u32) -> bool {
+        self.evaluated_frame
+            .load(std::sync::atomic::Ordering::Acquire)
+            != u64::from(frame.wrapping_sub(1))
+    }
+
+    /// Record a successful native evaluation, never a skipped or failed call.
+    pub fn mark_evaluated(&self, frame: u32) {
+        self.evaluated_frame
+            .store(u64::from(frame), std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod guide_status_tests {
+    use super::DlssRayReconstructionGuideStatus;
+
+    #[test]
+    fn pending_current_stale_and_resume() {
+        let status = DlssRayReconstructionGuideStatus::default();
+        assert!(!status.is_ready(0));
+        assert!(!status.is_ready(u32::MAX));
+        assert!(status.reset_needed(0));
+        status.mark_ready(0);
+        assert!(status.is_ready(0));
+        assert!(status.reset_needed(0));
+        status.mark_evaluated(0);
+        assert!(!status.is_ready(1));
+        assert!(!status.reset_needed(1));
+        status.mark_ready(2);
+        assert!(!status.is_ready(0));
+        assert!(status.is_ready(2));
+        assert!(status.reset_needed(2));
+        status.mark_evaluated(2);
+        assert!(!status.reset_needed(3));
+    }
+
+    #[test]
+    fn frame_counter_wraps_without_colliding_with_sentinel() {
+        let status = DlssRayReconstructionGuideStatus::default();
+        assert!(status.reset_needed(u32::MAX));
+        status.mark_ready(u32::MAX);
+        assert!(status.is_ready(u32::MAX));
+        status.mark_evaluated(u32::MAX);
+        status.mark_ready(0);
+        assert!(status.is_ready(0));
+        assert!(!status.is_ready(u32::MAX));
+        assert!(!status.reset_needed(0));
     }
 }
 

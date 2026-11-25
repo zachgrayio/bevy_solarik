@@ -42,7 +42,8 @@ fn resolve_background_guides(pixel_id: vec2u) {
 
     textureStore(diffuse_albedo, pixel_id, vec4(calculate_diffuse_color(surface.material.base_color, surface.material.metallic, 0.0, 0.0), 0.0));
     textureStore(specular_albedo, pixel_id, vec4(env_brdf_approx2(F0, surface.material.roughness, surface.world_normal, wo), 0.0));
-    textureStore(normal_roughness, pixel_id, vec4(surface.world_normal, surface.material.perceptual_roughness));
+    // DLSS RR packed guides require linear roughness, not perceptual roughness.
+    textureStore(normal_roughness, pixel_id, vec4(surface.world_normal, surface.material.roughness));
 }
 
 fn env_brdf_approx2(specular_color: vec3<f32>, alpha: f32, N: vec3<f32>, V: vec3<f32>) -> vec3<f32> {

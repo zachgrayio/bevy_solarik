@@ -5,7 +5,7 @@ use super::{
 };
 use crate::scene::RaytracingSceneBindings;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-use bevy_anti_alias::dlss::ViewDlssRayReconstructionTextures;
+use bevy_anti_alias::dlss::{DlssRayReconstructionGuideStatus, ViewDlssRayReconstructionTextures};
 use bevy_asset::{AssetServer, Handle, load_embedded_asset};
 use bevy_core_pipeline::core_3d::Transparent3d;
 use bevy_core_pipeline::prepass::{
@@ -93,6 +93,7 @@ type SolarikLightingViewQuery = (
     &'static PreviousViewUniformOffset,
     Option<&'static TemporalJitter>,
     Option<&'static ViewDlssRayReconstructionTextures>,
+    Option<&'static DlssRayReconstructionGuideStatus>,
 );
 
 /// Views whose raster panes are owned by the primary compositor this frame.
@@ -174,7 +175,7 @@ pub fn prepare_primary_glass(
         #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
         let (_, extracted, _, _, textures, _, _, _) = view;
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-        let (_, extracted, _, _, textures, _, _, _, rr_textures) = view;
+        let (_, extracted, _, _, textures, _, _, _, rr_textures, _) = view;
         #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
         let mode = ViewLightingMode::Standard;
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -250,6 +251,7 @@ pub fn solarik_lighting<const PRIMARY: bool>(
         previous_view_uniform_offset,
         temporal_jitter,
         view_dlss_rr_textures,
+        dlss_rr_guide_status,
     ) = view.into_inner();
 
     let owns_glass = primary_views
@@ -736,6 +738,15 @@ pub fn solarik_lighting<const PRIMARY: bool>(
     }
 
     drop(pass);
+    #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+    if bind_group_resolve_dlss_rr_textures.is_some()
+        && resolve_dlss_rr_textures_pipeline.is_some()
+        && let Some(status) = dlss_rr_guide_status
+    {
+        // The base guide resolve and every optional later guide write are now
+        // recorded. Pending-pipeline returns above must never publish readiness.
+        status.mark_ready(render_frame);
+    }
     #[cfg(feature = "nrd")]
     if let Some(nrd_pipelines) = nrd_pipelines.as_deref() {
         let enabled = solarik_lighting.nrd && matches!(mode, ViewLightingMode::Standard);

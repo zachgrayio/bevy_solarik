@@ -20,8 +20,16 @@ use wgpu::{
 };
 
 pub mod screenshot;
+mod surface_receipt;
+#[doc(hidden)]
+pub use surface_receipt::ExtractedSurfaceExtent;
+pub use surface_receipt::{WindowReconfigureEpoch, WindowSurfaceReceipt, WindowSurfaceStamp};
 
 use screenshot::ScreenshotPlugin;
+use surface_receipt::{
+    RequestDecision, configuration_succeeded, native_stamp, request_decision_for_backend,
+    request_native_epoch,
+};
 
 pub struct WindowRenderPlugin;
 
@@ -120,12 +128,36 @@ fn extract_windows(
     mut commands: Commands,
     mut extracted_windows: Query<&mut ExtractedWindow>,
     mut closing: Extract<MessageReader<WindowClosing>>,
-    windows: Extract<Query<(RenderEntity, &Window, &RawHandleWrapper, Has<PrimaryWindow>)>>,
+    windows: Extract<
+        Query<(
+            RenderEntity,
+            &Window,
+            &RawHandleWrapper,
+            Has<PrimaryWindow>,
+            Option<&WindowSurfaceReceipt>,
+            Option<&WindowReconfigureEpoch>,
+        )>,
+    >,
     mut removed: Extract<RemovedComponents<RawHandleWrapper>>,
     mut removed_primary: Extract<RemovedComponents<PrimaryWindow>>,
     mapper: Extract<Query<&RenderEntity>>,
 ) {
-    for (render_entity, window, handle, is_primary) in windows.iter() {
+    for (render_entity, window, handle, is_primary, receipt, request) in windows.iter() {
+        let mut render_window = commands.entity(render_entity);
+        render_window.insert(ExtractedSurfaceExtent(
+            window.resolution.physical_width(),
+            window.resolution.physical_height(),
+        ));
+        if let Some(receipt) = receipt {
+            render_window.insert(receipt.clone());
+        } else {
+            render_window.remove::<WindowSurfaceReceipt>();
+        }
+        if let Some(request) = request {
+            render_window.insert(*request);
+        } else {
+            render_window.remove::<WindowReconfigureEpoch>();
+        }
         if is_primary {
             commands.entity(render_entity).insert(PrimaryWindow);
         }
@@ -232,6 +264,60 @@ pub struct SurfaceData {
     surface: WgpuSurface,
     configuration: SurfaceConfiguration,
     texture_view_format: Option<TextureFormat>,
+    applied_request_epoch: Option<u64>,
+}
+
+fn native_surface_receipts_supported(adapter: &RenderAdapter) -> bool {
+    let backend = adapter.get_info().backend;
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "android",
+        feature = "vulkan-portability"
+    ))]
+    if backend == wgpu::Backend::Vulkan {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    if backend == wgpu::Backend::Dx12 {
+        return true;
+    }
+    let _ = backend;
+    false
+}
+
+/// Configure through wgpu, then validate its actual native success stamp. A
+/// validation error may leave the old native stamp intact, so returning from
+/// `configure_surface` alone is not an application-request acknowledgment.
+fn configure_surface_with_receipt(
+    device: &RenderDevice,
+    surface: &wgpu::Surface<'_>,
+    configuration: &SurfaceConfiguration,
+    request: Option<&WindowReconfigureEpoch>,
+    applied_request_epoch: &mut Option<u64>,
+    receipt: Option<&WindowSurfaceReceipt>,
+) {
+    let previous = native_stamp(surface);
+    let pending_request = request.filter(|r| *applied_request_epoch != Some(r.epoch));
+    let epoch = pending_request.map_or(applied_request_epoch.unwrap_or(0), |r| r.epoch);
+    let surface_id = request_native_epoch(surface, epoch);
+    device.configure_surface(surface, configuration);
+    if let (Some(surface_id), Some(stamp)) = (surface_id, native_stamp(surface))
+        && configuration_succeeded(
+            surface_id,
+            previous,
+            stamp,
+            (configuration.width, configuration.height),
+            pending_request,
+        )
+    {
+        if let Some(request) = pending_request {
+            *applied_request_epoch = Some(request.epoch);
+        }
+        if let Some(receipt) = receipt {
+            receipt.publish(stamp);
+        }
+    }
 }
 
 /// (re)configures window surfaces, and obtains a swapchain texture for rendering.
@@ -256,12 +342,21 @@ pub struct SurfaceData {
 ///   [`Backends::GL`](crate::settings::Backends::GL) with the `gles` feature enabled if your
 ///   GPU/drivers support `OpenGL 4.3` / `OpenGL ES 3.0` or later.
 pub fn prepare_windows(
-    mut windows: Query<(MainEntity, &mut ExtractedWindow, Option<&SurfaceData>)>,
+    mut windows: Query<(
+        MainEntity,
+        &mut ExtractedWindow,
+        Option<&mut SurfaceData>,
+        Option<&WindowReconfigureEpoch>,
+        Option<&WindowSurfaceReceipt>,
+        Option<&ExtractedSurfaceExtent>,
+    )>,
     render_device: Res<RenderDevice>,
+    render_adapter: Res<RenderAdapter>,
     sorted_cameras: Res<crate::camera::SortedCameras>,
     #[cfg(target_os = "linux")] render_instance: Res<RenderInstance>,
 ) {
-    for (main_entity, mut window, maybe_surface_data) in &mut windows {
+    let supports_native_stamps = native_surface_receipts_supported(&render_adapter);
+    for (main_entity, mut window, maybe_surface_data, request, receipt, extent) in &mut windows {
         // Skip acquiring a swap-chain texture for windows that no camera
         // targets. This avoids a wasted clear pass in
         // `handle_uncovered_swap_chains` that triggers a DMA-fence fd leak on
@@ -277,9 +372,18 @@ pub fn prepare_windows(
             continue;
         }
 
-        let Some(surface_data) = maybe_surface_data else {
+        let Some(mut surface_data) = maybe_surface_data else {
             continue;
         };
+        if request_decision_for_backend(
+            supports_native_stamps,
+            request,
+            surface_data.applied_request_epoch,
+            extent.map_or((0, 0), |extent| (extent.0, extent.1)),
+        ) == RequestDecision::WaitingForExtent
+        {
+            continue;
+        }
 
         // We didn't present the previous frame, so we can keep using our existing swapchain texture.
         if window.has_swapchain_texture() && !window.size_changed && !window.present_mode_changed {
@@ -311,7 +415,12 @@ pub fn prepare_windows(
             })[0]
         };
 
-        let surface = &surface_data.surface;
+        let SurfaceData {
+            surface,
+            configuration,
+            applied_request_epoch,
+            ..
+        } = &mut *surface_data;
         match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {
@@ -325,7 +434,14 @@ pub fn prepare_windows(
                 );
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
-                render_device.configure_surface(surface, &surface_data.configuration);
+                configure_surface_with_receipt(
+                    &render_device,
+                    surface,
+                    configuration,
+                    request,
+                    applied_request_epoch,
+                    receipt,
+                );
                 let frame = match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(surface_texture)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => surface_texture,
@@ -345,17 +461,40 @@ pub fn prepare_windows(
                 bevy_log::error!("Couldn't get swap chain texture: {other:?}");
             }
         }
-        window.swap_chain_texture_format = Some(surface_data.configuration.format);
+        window.swap_chain_texture_format = Some(configuration.format);
     }
 }
 
-pub fn need_surface_configuration(windows: Query<(&ExtractedWindow, Has<SurfaceData>)>) -> bool {
-    for (window, has_surface_data) in &windows {
-        if !has_surface_data || window.size_changed || window.present_mode_changed {
-            return true;
-        }
-    }
-    false
+pub fn need_surface_configuration(
+    windows: Query<(
+        &ExtractedWindow,
+        Option<&SurfaceData>,
+        Option<&WindowReconfigureEpoch>,
+        Option<&WindowSurfaceReceipt>,
+        Option<&ExtractedSurfaceExtent>,
+    )>,
+    render_adapter: Res<RenderAdapter>,
+) -> bool {
+    let supports_native_stamps = native_surface_receipts_supported(&render_adapter);
+    windows
+        .iter()
+        .any(|(window, data, request, receipt, extent)| {
+            let decision = request_decision_for_backend(
+                supports_native_stamps,
+                request,
+                data.and_then(|data| data.applied_request_epoch),
+                extent.map_or((0, 0), |extent| (extent.0, extent.1)),
+            );
+            decision != RequestDecision::WaitingForExtent
+                && (data.is_none()
+                    || window.size_changed
+                    || window.present_mode_changed
+                    || decision == RequestDecision::Configure
+                    || receipt.is_some_and(|receipt| {
+                        receipt.supported() != Some(supports_native_stamps)
+                            || (supports_native_stamps && receipt.configured().is_none())
+                    }))
+        })
 }
 
 // 2 is wgpu's default/what we've been using so far.
@@ -375,12 +514,32 @@ pub fn create_surfaces(
         &mut ExtractedWindow,
         &RawHandleWrapper,
         Option<&mut SurfaceData>,
+        Option<&WindowReconfigureEpoch>,
+        Option<&WindowSurfaceReceipt>,
+        Option<&ExtractedSurfaceExtent>,
     )>,
     render_instance: Res<RenderInstance>,
     render_adapter: Res<RenderAdapter>,
     render_device: Res<RenderDevice>,
 ) {
-    for (entity, mut window, handle, mut maybe_surface_data) in &mut windows {
+    let supports_native_stamps = native_surface_receipts_supported(&render_adapter);
+    for (entity, mut window, handle, mut maybe_surface_data, request, receipt, extent) in
+        &mut windows
+    {
+        if let Some(receipt) = receipt {
+            receipt.set_supported(supports_native_stamps);
+        }
+        let decision = request_decision_for_backend(
+            supports_native_stamps,
+            request,
+            maybe_surface_data
+                .as_deref()
+                .and_then(|data| data.applied_request_epoch),
+            extent.map_or((0, 0), |extent| (extent.0, extent.1)),
+        );
+        if decision == RequestDecision::WaitingForExtent {
+            continue;
+        }
         let Some(data) = maybe_surface_data.as_mut() else {
             let surface_target = SurfaceTargetUnsafe::RawHandle {
                 raw_display_handle: Some(handle.get_display_handle()),
@@ -440,17 +599,30 @@ pub fn create_surfaces(
                 color_space: wgpu::SurfaceColorSpace::Auto,
             };
 
-            render_device.configure_surface(&surface, &configuration);
+            let mut applied_request_epoch = None;
+            configure_surface_with_receipt(
+                &render_device,
+                &surface,
+                &configuration,
+                request,
+                &mut applied_request_epoch,
+                receipt,
+            );
 
             commands.entity(entity).insert(SurfaceData {
                 surface: WgpuSurface::new(surface),
                 configuration,
                 texture_view_format,
+                applied_request_epoch,
             });
             continue;
         };
+        let data = &mut **data;
 
-        if window.size_changed || window.present_mode_changed {
+        if window.size_changed
+            || window.present_mode_changed
+            || decision == RequestDecision::Configure
+        {
             // normally this is dropped on present but we double check here to be safe as failure to
             // drop it will cause validation errors in wgpu
             drop(window.swap_chain_texture.take());
@@ -464,7 +636,24 @@ pub fn create_surfaces(
             data.configuration.height = window.physical_height;
             let caps = data.surface.get_capabilities(&render_adapter);
             data.configuration.present_mode = present_mode(&window, &caps);
-            render_device.configure_surface(&data.surface, &data.configuration);
+            configure_surface_with_receipt(
+                &render_device,
+                &data.surface,
+                &data.configuration,
+                request,
+                &mut data.applied_request_epoch,
+                receipt,
+            );
+        } else if let Some(receipt) = receipt
+            && let Some(stamp) = native_stamp(&data.surface)
+            && request.is_none_or(|request| {
+                stamp.request_epoch == request.epoch
+                    && (stamp.width, stamp.height) == (request.width, request.height)
+            })
+        {
+            // A receipt can be attached after the existing surface was configured.
+            // Publish that window's own native identity without reconfiguring it.
+            receipt.publish(stamp);
         }
     }
 }

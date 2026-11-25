@@ -22,7 +22,9 @@ use crate::{deferred::DEFAULT_PBR_DEFERRED_LIGHTING_PASS_ID, *};
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(StandardMaterialKey)]
 #[data(0, StandardMaterialUniform, binding_array(10))]
-#[bindless(index_table(range(0..31)))]
+// The derive conservatively counts six textures plus six samplers against the
+// sampler limit: 12 * 128 fits DX12's 2048. Layout and allocator share this count.
+#[bindless(limit(128), index_table(range(0..31)))]
 #[reflect(Default, Debug, Clone)]
 pub struct StandardMaterial {
     /// The color of the surface of the material before lighting.
@@ -1620,5 +1622,19 @@ impl Material for StandardMaterial {
                 (key.bind_group_data.bits() >> STANDARD_MATERIAL_KEY_DEPTH_BIAS_SHIFT) as i32;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bindless_limit_tests {
+    use super::StandardMaterial;
+    use bevy_render::render_resource::{AsBindGroup, BindlessSlabResourceLimit};
+
+    #[test]
+    fn standard_material_uses_one_explicit_bounded_slab_count() {
+        let limit = StandardMaterial::bindless_slot_count().expect("bindless material");
+        assert!(matches!(limit, BindlessSlabResourceLimit::Custom(128)));
+        assert_eq!(limit.resolve(), 128);
+        assert!(12 * limit.resolve() <= 2048);
     }
 }

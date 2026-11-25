@@ -264,6 +264,8 @@ pub mod noop;
 pub mod vulkan;
 
 pub mod auxil;
+/// Native surface configuration receipts for presentation integrations.
+pub mod surface_stamp;
 pub mod api {
     #[cfg(dx12)]
     pub use super::dx12::Api as Dx12;

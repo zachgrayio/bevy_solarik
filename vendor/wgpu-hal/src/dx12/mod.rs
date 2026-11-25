@@ -552,6 +552,7 @@ impl Instance {
         let visual = unsafe { DirectComposition::IDCompositionVisual::from_raw_borrowed(&visual) }
             .expect("COM pointer should not be NULL");
         Surface {
+            stamp_source: Default::default(),
             factory: self.factory.clone(),
             factory_media: self.factory_media.clone(),
             target: SurfaceTarget::Visual(visual.to_owned()),
@@ -571,6 +572,7 @@ impl Instance {
         // Or we make all these types owned, require an ownership transition, and replace SurfaceTargetUnsafe with SurfaceTarget.
         let surface_handle = Foundation::HANDLE(surface_handle);
         Surface {
+            stamp_source: Default::default(),
             factory: self.factory.clone(),
             factory_media: self.factory_media.clone(),
             target: SurfaceTarget::SurfaceHandle(surface_handle),
@@ -589,6 +591,7 @@ impl Instance {
             unsafe { types::ISwapChainPanelNative::from_raw_borrowed(&swap_chain_panel) }
                 .expect("COM pointer should not be NULL");
         Surface {
+            stamp_source: Default::default(),
             factory: self.factory.clone(),
             factory_media: self.factory_media.clone(),
             target: SurfaceTarget::SwapChainPanel(swap_chain_panel.to_owned()),
@@ -604,6 +607,7 @@ unsafe impl Send for Instance {}
 unsafe impl Sync for Instance {}
 
 struct SwapChain {
+    stamp: crate::surface_stamp::SurfaceStamp,
     // TODO: Drop order frees the SWC before the raw image pointers...?
     raw: Dxgi::IDXGISwapChain3,
     // need to associate raw image pointers with the swapchain so they can be properly released
@@ -632,6 +636,7 @@ enum SurfaceTarget {
 }
 
 pub struct Surface {
+    stamp_source: crate::surface_stamp::SurfaceStampSource,
     factory: DxgiFactory,
     factory_media: Option<Dxgi::IDXGIFactoryMedia>,
     target: SurfaceTarget,
@@ -647,6 +652,24 @@ unsafe impl Send for Surface {}
 unsafe impl Sync for Surface {}
 
 impl Surface {
+    /// Associate the next native configuration with an application request.
+    pub fn request_reconfigure_epoch(&self, epoch: u64) {
+        self.stamp_source.request(epoch);
+    }
+
+    /// Process-unique identity for this surface.
+    pub fn presentation_surface_id(&self) -> u64 {
+        self.stamp_source.surface_id()
+    }
+
+    /// Last successfully configured native surface stamp.
+    pub fn presentation_stamp(&self) -> Option<crate::surface_stamp::SurfaceStamp> {
+        self.swap_chain
+            .read()
+            .as_ref()
+            .map(|swapchain| swapchain.stamp)
+    }
+
     pub fn swap_chain(&self) -> Option<Dxgi::IDXGISwapChain3> {
         Some(self.swap_chain.read().as_ref()?.raw.clone())
     }
@@ -1024,10 +1047,20 @@ pub struct Dx12SwapchainHooks {
     /// `None` to fall back to the plain DXGI swapchain.
     pub create_swapchain_for_hwnd:
         Option<unsafe fn(&Dx12SwapchainCreateRequest) -> Option<*mut ffi::c_void>>,
+    /// Invoked before waiting for GPU idle to resize or release a swapchain.
+    /// Providers can stop frame generation while the old swapchain is still live.
+    pub on_before_swapchain_change: Option<fn()>,
     /// Invoked immediately before `IDXGISwapChain3::Present`.
     pub on_present_start: Option<fn()>,
     /// Invoked immediately after `IDXGISwapChain3::Present`.
     pub on_present_end: Option<fn()>,
+    /// Reports whether `Present` returned exactly `S_OK`. Positive non-present
+    /// statuses such as `DXGI_STATUS_OCCLUDED` report false.
+    pub on_present_result: Option<fn(bool)>,
+    /// Reports the immutable configuration used by this API Present.
+    pub on_present_stamp: Option<fn(crate::surface_stamp::SurfaceStamp, bool)>,
+    /// Reports a successfully committed native configuration.
+    pub on_surface_configured: Option<fn(crate::surface_stamp::SurfaceStamp)>,
     /// Invoked after `Present` with `IDXGISwapChain::GetLastPresentCount`, which
     /// counts every present the swapchain issued (generated frames included when a
     /// frame-generation proxy owns it).
@@ -1050,8 +1083,12 @@ pub struct Dx12SwapchainCreateRequest {
 static DX12_SWAPCHAIN_HOOKS: RwLock<Dx12SwapchainHooks> = RwLock::new(Dx12SwapchainHooks {
     on_swapchain_created: None,
     create_swapchain_for_hwnd: None,
+    on_before_swapchain_change: None,
     on_present_start: None,
     on_present_end: None,
+    on_present_result: None,
+    on_present_stamp: None,
+    on_surface_configured: None,
     on_presented: None,
 });
 
@@ -1077,11 +1114,23 @@ pub fn merge_swapchain_hooks(patch: Dx12SwapchainHooks) {
     if patch.create_swapchain_for_hwnd.is_some() {
         current.create_swapchain_for_hwnd = patch.create_swapchain_for_hwnd;
     }
+    if patch.on_before_swapchain_change.is_some() {
+        current.on_before_swapchain_change = patch.on_before_swapchain_change;
+    }
     if patch.on_present_start.is_some() {
         current.on_present_start = patch.on_present_start;
     }
     if patch.on_present_end.is_some() {
         current.on_present_end = patch.on_present_end;
+    }
+    if patch.on_present_result.is_some() {
+        current.on_present_result = patch.on_present_result;
+    }
+    if patch.on_present_stamp.is_some() {
+        current.on_present_stamp = patch.on_present_stamp;
+    }
+    if patch.on_surface_configured.is_some() {
+        current.on_surface_configured = patch.on_surface_configured;
     }
     if patch.on_presented.is_some() {
         current.on_presented = patch.on_presented;
@@ -1579,6 +1628,10 @@ impl crate::Surface for Surface {
             flags |= Dxgi::DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         }
 
+        // Stop provider work before waiting on or replacing its live swapchain.
+        if let Some(before_change) = swapchain_hooks().on_before_swapchain_change {
+            before_change();
+        }
         // While `configure`s contract ensures that no work on the GPU's main queues
         // are in flight, we still need to wait for the present queue to be idle.
         unsafe { device.wait_for_present_queue_idle() }?;
@@ -1817,8 +1870,12 @@ impl crate::Surface for Surface {
             resources.push(resource);
         }
 
+        let stamp = self
+            .stamp_source
+            .candidate(config.extent.width, config.extent.height);
         let mut swapchain = self.swap_chain.write();
         *swapchain = Some(SwapChain {
+            stamp,
             raw: swap_chain,
             resources,
             waitable,
@@ -1827,12 +1884,19 @@ impl crate::Surface for Surface {
             format: config.format,
             size: config.extent,
         });
+        self.stamp_source.commit(stamp);
+        if let Some(configured) = swapchain_hooks().on_surface_configured {
+            configured(stamp);
+        }
 
         Ok(())
     }
 
     unsafe fn unconfigure(&self, device: &Device) {
         if let Some(sc) = self.swap_chain.write().take() {
+            if let Some(before_change) = swapchain_hooks().on_before_swapchain_change {
+                before_change();
+            }
             unsafe {
                 // While `unconfigure`s contract ensures that no work on the GPU's main queues
                 // are in flight, we still need to wait for the present queue to be idle.
@@ -1859,7 +1923,13 @@ impl crate::Surface for Surface {
             wgt::Dx12UseFrameLatencyWaitableObject::None
             | wgt::Dx12UseFrameLatencyWaitableObject::DontWait => {}
             wgt::Dx12UseFrameLatencyWaitableObject::Wait => {
+                let wait_started = std::time::Instant::now();
                 unsafe { sc.wait(timeout) }?;
+                log::debug!(
+                    target: "solarik_present_timing",
+                    "DX12_TIMING acquire_wait_ms={:.3}",
+                    wait_started.elapsed().as_secs_f64() * 1000.0
+                );
             }
         }
 
@@ -1966,14 +2036,30 @@ impl crate::Queue for Queue {
         if let Some(before) = hooks.on_present_start {
             before();
         }
+        let present_started = std::time::Instant::now();
         let present_res = unsafe { sc.raw.Present(interval, flags) };
+        let present_ms = present_started.elapsed().as_secs_f64() * 1000.0;
+        let hook_started = std::time::Instant::now();
         if let Some(after) = hooks.on_present_end {
             after();
         }
+        log::debug!(
+            target: "solarik_present_timing",
+            "DX12_TIMING present_ms={:.3} after_hook_ms={:.3}",
+            present_ms,
+            hook_started.elapsed().as_secs_f64() * 1000.0
+        );
         if let Some(presented) = hooks.on_presented {
             if let Ok(count) = unsafe { sc.raw.GetLastPresentCount() } {
                 presented(count);
             }
+        }
+        if let Some(result) = hooks.on_present_result {
+            // HRESULT::is_ok also accepts non-present statuses such as OCCLUDED.
+            result(present_res.0 == 0);
+        }
+        if let Some(result) = hooks.on_present_stamp {
+            result(sc.stamp, present_res.0 == 0);
         }
         present_res.ok().into_device_result("Present")?;
 
@@ -1986,6 +2072,8 @@ impl crate::Queue for Queue {
     }
 
     unsafe fn wait_for_idle(&self) -> Result<(), crate::DeviceError> {
+        let started = std::time::Instant::now();
+        log::info!(target: "solarik_present_timing", "DX12_RENDER_IDLE_WAIT_BEGIN");
         let value = self
             .idle_fence_value
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
@@ -1997,7 +2085,9 @@ impl crate::Queue for Queue {
                 .SetEventOnCompletion(value, self.idle_event.0)
         }
         .into_device_result("SetEventOnCompletion")?;
+        log::info!(target: "solarik_present_timing", "DX12_RENDER_IDLE_WAIT_SIGNAL_QUEUED value={value}");
         unsafe { Threading::WaitForSingleObject(self.idle_event.0, Threading::INFINITE) };
+        log::info!(target: "solarik_present_timing", "DX12_RENDER_IDLE_WAIT_END elapsed_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
         Ok(())
     }
 }

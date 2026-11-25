@@ -144,6 +144,12 @@ pub const GUID_RESOURCE: StructType = StructType {
     data3: 0x4b72,
     data4: [0x83, 0x91, 0x13, 0xf8, 0x72, 0x1c, 0x72, 0x61],
 };
+pub const GUID_SUBRESOURCE_RANGE: StructType = StructType {
+    data1: 0x8d4c_316c,
+    data2: 0xd402,
+    data3: 0x4524,
+    data4: [0x89, 0xa7, 0x14, 0xe7, 0x9e, 0x63, 0x8e, 0x3a],
+};
 pub const GUID_RESOURCE_TAG: StructType = StructType {
     data1: 0x4c6a_5aad,
     data2: 0xb445,
@@ -246,6 +252,18 @@ pub struct Extent {
     pub left: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Vulkan view range chained to `Resource::base.next` (Streamline 2.14.16).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SubresourceRange {
+    pub base: BaseStructure,
+    pub aspect_mask: u32,
+    pub base_mip_level: u32,
+    pub level_count: u32,
+    pub base_array_layer: u32,
+    pub layer_count: u32,
 }
 
 #[repr(C)]
@@ -741,6 +759,12 @@ const _: () = {
     assert!(size_of::<Preferences>() == 144);
     assert!(size_of::<ViewportHandle>() == 40);
     assert!(size_of::<AdapterInfo>() == 56);
+    assert!(size_of::<SubresourceRange>() == 56);
+    assert!(std::mem::offset_of!(SubresourceRange, aspect_mask) == 32);
+    assert!(std::mem::offset_of!(SubresourceRange, base_mip_level) == 36);
+    assert!(std::mem::offset_of!(SubresourceRange, level_count) == 40);
+    assert!(std::mem::offset_of!(SubresourceRange, base_array_layer) == 44);
+    assert!(std::mem::offset_of!(SubresourceRange, layer_count) == 48);
     assert!(size_of::<Resource>() == 112);
     assert!(size_of::<ResourceTag>() == 64);
     assert!(size_of::<DlssGOptions>() == 120);

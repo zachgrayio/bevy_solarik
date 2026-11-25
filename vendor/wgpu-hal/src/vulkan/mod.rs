@@ -49,6 +49,12 @@ pub struct VulkanSwapchainInterceptor {
     pub queue_present: Option<vk::PFN_vkQueuePresentKHR>,
     pub on_present_start: Option<fn()>,
     pub on_present_end: Option<fn()>,
+    /// Reports whether the real API Present succeeded (including SUBOPTIMAL).
+    pub on_present_result: Option<fn(bool)>,
+    /// Reports the immutable configuration used by this API Present.
+    pub on_present_stamp: Option<fn(crate::surface_stamp::SurfaceStamp, bool)>,
+    /// Reports a successfully committed native configuration.
+    pub on_surface_configured: Option<fn(crate::surface_stamp::SurfaceStamp)>,
     pub on_before_swapchain_recreate: Option<fn()>,
 }
 
@@ -61,6 +67,9 @@ static VULKAN_SWAPCHAIN_INTERCEPTOR: RwLock<VulkanSwapchainInterceptor> =
         queue_present: None,
         on_present_start: None,
         on_present_end: None,
+        on_present_result: None,
+        on_present_stamp: None,
+        on_surface_configured: None,
         on_before_swapchain_recreate: None,
     });
 
@@ -96,6 +105,15 @@ pub fn merge_swapchain_interceptor(patch: VulkanSwapchainInterceptor) {
     }
     if patch.on_present_end.is_some() {
         current.on_present_end = patch.on_present_end;
+    }
+    if patch.on_present_result.is_some() {
+        current.on_present_result = patch.on_present_result;
+    }
+    if patch.on_present_stamp.is_some() {
+        current.on_present_stamp = patch.on_present_stamp;
+    }
+    if patch.on_surface_configured.is_some() {
+        current.on_surface_configured = patch.on_surface_configured;
     }
     if patch.on_before_swapchain_recreate.is_some() {
         current.on_before_swapchain_recreate = patch.on_before_swapchain_recreate;
@@ -303,11 +321,30 @@ pub struct Instance {
 
 #[expect(missing_debug_implementations, reason = "TODO?")]
 pub struct Surface {
+    stamp_source: crate::surface_stamp::SurfaceStampSource,
     swapchain: RwLock<Option<Box<dyn swapchain::Swapchain>>>,
     inner: Box<dyn swapchain::Surface>,
 }
 
 impl Surface {
+    /// Associate the next native configuration with an application request.
+    pub fn request_reconfigure_epoch(&self, epoch: u64) {
+        self.stamp_source.request(epoch);
+    }
+
+    /// Identity of this surface, independent of native handle reuse.
+    pub fn presentation_surface_id(&self) -> u64 {
+        self.stamp_source.surface_id()
+    }
+
+    /// Last successfully configured native surface stamp.
+    pub fn presentation_stamp(&self) -> Option<crate::surface_stamp::SurfaceStamp> {
+        self.swapchain
+            .read()
+            .as_ref()
+            .map(|swapchain| swapchain.presentation_stamp())
+    }
+
     /// Returns the raw Vulkan surface handle.
     ///
     /// Returns `None` if the surface is a DXGI surface.
@@ -939,6 +976,7 @@ pub struct TextureView {
     _layers: NonZeroU32,
     format: wgt::TextureFormat,
     raw_format: vk::Format,
+    subresource_range: vk::ImageSubresourceRange,
     base_mip_level: u32,
     dimension: wgt::TextureViewDimension,
     texture_identity: ResourceIdentity<vk::Image>,
@@ -948,6 +986,16 @@ pub struct TextureView {
 impl crate::DynTextureView for TextureView {}
 
 impl TextureView {
+    /// Returns the actual native format used to create this image view.
+    pub fn raw_format(&self) -> vk::Format {
+        self.raw_format
+    }
+
+    /// Returns the exact native subresource range used to create this image view.
+    pub fn raw_subresource_range(&self) -> vk::ImageSubresourceRange {
+        self.subresource_range
+    }
+
     /// # Safety
     ///
     /// - The image view handle must not be manually destroyed

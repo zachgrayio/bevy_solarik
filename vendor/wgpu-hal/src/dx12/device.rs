@@ -260,6 +260,8 @@ impl super::Device {
     //
     // Once this method completes, the surface is able to be resized or deleted.
     pub(super) unsafe fn wait_for_present_queue_idle(&self) -> Result<(), crate::DeviceError> {
+        let started = Instant::now();
+        log::info!(target: "solarik_present_timing", "DX12_PRESENT_IDLE_WAIT_BEGIN");
         let cur_value = unsafe { self.idler.fence.GetCompletedValue() };
         if cur_value == !0 {
             return Err(crate::DeviceError::Lost);
@@ -272,7 +274,9 @@ impl super::Device {
             .into_device_result("Signal")?;
         let hr = unsafe { self.idler.fence.SetEventOnCompletion(value, event.0) };
         hr.into_device_result("Set event")?;
+        log::info!(target: "solarik_present_timing", "DX12_PRESENT_IDLE_WAIT_SIGNAL_QUEUED value={value}");
         unsafe { Threading::WaitForSingleObject(event.0, Threading::INFINITE) };
+        log::info!(target: "solarik_present_timing", "DX12_PRESENT_IDLE_WAIT_END elapsed_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
         Ok(())
     }
 

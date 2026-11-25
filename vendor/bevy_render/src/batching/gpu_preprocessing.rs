@@ -2852,6 +2852,7 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
     let bin_unpacking_buffers = bin_unpacking_buffers.into_inner();
 
     let phase_type_id = TypeId::of::<BPI>();
+    let (mut topology_writes, mut topology_bytes, mut topology_skips) = (0_u64, 0_u64, 0_u64);
 
     // Record all the `RetainedViewEntity` keys that we saw so that we can
     // delete buffers corresponding to views that went away.
@@ -2946,22 +2947,18 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
 
             // Write the various buffers to the GPU.
 
-            batch_set
+            let (writes, bytes, skips) = batch_set
                 .gpu_buffers
-                .render_binned_mesh_instance_buffer
-                .write_buffer(&render_device, &render_queue);
-            batch_set
-                .gpu_buffers
-                .bin_metadata_buffer
-                .write_buffer(&render_device, &render_queue);
+                .write_topology_buffers(&render_device, &render_queue);
+            topology_writes += writes;
+            topology_bytes += bytes;
+            topology_skips += skips;
+            // GPU-written scratch is still allocated every frame, independently
+            // of whether the CPU topology inputs changed.
             batch_set
                 .gpu_buffers
                 .fan_buffer
                 .write_buffer(&render_device);
-            batch_set
-                .gpu_buffers
-                .bin_index_to_bin_metadata_index_buffer
-                .write_buffer(&render_device, &render_queue);
 
             let (
                 Some(render_bin_entry_buffer),
@@ -3054,6 +3051,15 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
             }
         }
     }
+
+    bevy_log::debug!(
+        target: "solarik_uploads",
+        phase = core::any::type_name::<BPI>(),
+        writes = topology_writes,
+        bytes = topology_bytes,
+        skips = topology_skips,
+        "read-only topology uploads"
+    );
 
     // Delete buffers corresponding to dead views.
     bin_unpacking_buffers

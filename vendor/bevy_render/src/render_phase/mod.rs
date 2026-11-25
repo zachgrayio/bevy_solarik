@@ -48,8 +48,8 @@ use crate::batching::gpu_preprocessing::{
     GpuBinMetadata, GpuPreprocessingMode, GpuPreprocessingSupport, PhaseBatchedInstanceBuffers,
     PhaseIndirectParametersBuffers,
 };
-use crate::render_resource::{RawBufferVec, UninitBufferVec};
-use crate::renderer::RenderDevice;
+use crate::render_resource::{BufferId, RawBufferVec, UninitBufferVec};
+use crate::renderer::{RenderDevice, RenderQueue};
 use crate::sync_world::{MainEntity, MainEntityHashMap};
 use crate::view::{ExtractedView, RetainedViewEntity};
 use bevy_material::descriptor::CachedRenderPipelineId;
@@ -242,6 +242,70 @@ pub struct RenderMultidrawableBatchSetGpuBuffers {
     /// A temporary buffer used to store intermediate sums during the uniform
     /// allocation phase.
     pub fan_buffer: UninitBufferVec<u32>,
+
+    /// Exact CPU snapshots of the three read-only topology inputs, not the
+    /// GPU-written fan buffer. Buffer identity also invalidates each snapshot.
+    topology_uploads: [TopologyBufferUpload<BufferId>; 3],
+}
+
+/// Tracks only completed uploads. Exact bytes also detect mutations through the
+/// public topology buffers, including same-length edits and reordering.
+struct TopologyBufferUpload<Id> {
+    destination: Option<Id>,
+    bytes: Vec<u8>,
+}
+
+impl<Id: Copy + PartialEq> TopologyBufferUpload<Id> {
+    fn new() -> Self {
+        Self {
+            destination: None,
+            bytes: Vec::new(),
+        }
+    }
+
+    fn needs_upload(&self, destination: Id, bytes: &[u8]) -> bool {
+        self.destination != Some(destination) || self.bytes != bytes
+    }
+
+    fn record_upload(&mut self, destination: Id, bytes: &[u8]) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
+        self.destination = Some(destination);
+    }
+
+    fn clear(&mut self) {
+        self.destination = None;
+        self.bytes.clear();
+    }
+}
+
+impl TopologyBufferUpload<BufferId> {
+    fn write_buffer<T: bytemuck::NoUninit>(
+        &mut self,
+        raw: &mut RawBufferVec<T>,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+    ) -> (u64, u64, u64) {
+        // Reserve even when the bytes match: capacity and label changes can
+        // replace the destination, whose contents must then be initialized.
+        raw.reserve(raw.len(), device);
+        if raw.is_empty() {
+            self.clear();
+            return (0, 0, 0);
+        }
+        let Some(buffer) = raw.buffer() else {
+            self.clear();
+            return (0, 0, 0);
+        };
+        let bytes = bytemuck::cast_slice(raw.values());
+        if self.needs_upload(buffer.id(), bytes) {
+            queue.write_buffer(buffer, 0, bytes);
+            self.record_upload(buffer.id(), bytes);
+            (1, bytes.len() as u64, 0)
+        } else {
+            (0, 0, 1)
+        }
+    }
 }
 
 impl RenderMultidrawableBatchSetGpuBuffers {
@@ -262,7 +326,35 @@ impl RenderMultidrawableBatchSetGpuBuffers {
             bin_metadata_buffer,
             bin_index_to_bin_metadata_index_buffer,
             fan_buffer,
+            topology_uploads: core::array::from_fn(|_| TopologyBufferUpload::new()),
         }
+    }
+
+    /// Uploads changed read-only bin-unpacking inputs. GPU-written scratch and
+    /// per-frame dispatch/reset buffers must not use this cache.
+    /// Returns (queue writes, uploaded bytes, unchanged nonempty buffers).
+    pub(crate) fn write_topology_buffers(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+    ) -> (u64, u64, u64) {
+        let instances = self.topology_uploads[0].write_buffer(
+            &mut self.render_binned_mesh_instance_buffer,
+            device,
+            queue,
+        );
+        let metadata =
+            self.topology_uploads[1].write_buffer(&mut self.bin_metadata_buffer, device, queue);
+        let indices = self.topology_uploads[2].write_buffer(
+            &mut self.bin_index_to_bin_metadata_index_buffer,
+            device,
+            queue,
+        );
+        (
+            instances.0 + metadata.0 + indices.0,
+            instances.1 + metadata.1 + indices.1,
+            instances.2 + metadata.2 + indices.2,
+        )
     }
 
     /// Inserts an entity into the GPU buffers and returns its index.
@@ -2345,6 +2437,54 @@ mod tests {
     use proptest_derive::Arbitrary;
 
     use crate::render_phase::{GpuRenderBinnedMeshInstance, RenderBinnedMeshInstanceIndex};
+
+    #[test]
+    fn topology_upload_detects_all_content_changes() {
+        let mut upload = super::TopologyBufferUpload::new();
+        let original = [1, 2, 3, 4];
+        assert!(upload.needs_upload(1_u32, &original));
+        // A decision alone must not mark the destination as initialized.
+        assert!(upload.needs_upload(1, &original));
+        upload.record_upload(1, &original);
+        assert!(!upload.needs_upload(1, &original));
+
+        // Same-size field edits, reordered entries, growth, and removal all
+        // require writes, without relying on mutation-site invalidation.
+        for changed in [&[1, 2, 9, 4][..], &[3, 4, 1, 2], &[1, 2, 3, 4, 5], &[1, 2]] {
+            assert!(upload.needs_upload(1, changed));
+            upload.record_upload(1, changed);
+            assert!(!upload.needs_upload(1, changed));
+        }
+    }
+
+    #[test]
+    fn topology_upload_reinitializes_replaced_destination() {
+        let mut upload = super::TopologyBufferUpload::new();
+        let bytes = [1, 2, 3, 4];
+        upload.record_upload(1_u32, &bytes);
+        // Replacement after reserve (growth, relabeling, or a new buffer)
+        // invalidates matching bytes.
+        assert!(upload.needs_upload(2, &bytes));
+        upload.record_upload(2, &bytes);
+        assert!(!upload.needs_upload(2, &bytes));
+        assert!(upload.needs_upload(1, &bytes));
+    }
+
+    #[test]
+    fn topology_upload_empty_or_missing_destination_forgets_snapshot() {
+        let mut upload = super::TopologyBufferUpload::new();
+        let bytes = [1, 2, 3, 4];
+        upload.record_upload(1_u32, &bytes);
+        let capacity = upload.bytes.capacity();
+        upload.clear();
+        assert!(upload.bytes.is_empty());
+        assert_eq!(upload.destination, None);
+        assert_eq!(upload.bytes.capacity(), capacity);
+        // Refilling an old allocation must write even if its bytes match the
+        // last nonempty frame. A fresh allocation must also write.
+        assert!(upload.needs_upload(1, &bytes));
+        assert!(upload.needs_upload(2, &bytes));
+    }
 
     /// A `proptest`-based randomized test for `RenderMultidrawableBatchSet`.
     ///

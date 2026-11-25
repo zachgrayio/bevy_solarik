@@ -554,6 +554,7 @@ impl super::Instance {
             crate::vulkan::swapchain::NativeSurface::from_vk_surface_khr(self, surface, hwnd);
 
         super::Surface {
+            stamp_source: Default::default(),
             swapchain: RwLock::new(None),
             inner: Box::new(native_surface),
         }
@@ -1019,8 +1020,15 @@ impl crate::Surface for super::Surface {
             unsafe { old.release_resources(device) };
         }
 
-        let swapchain = unsafe { self.inner.create_swapchain(device, config, old)? };
+        let stamp = self
+            .stamp_source
+            .candidate(config.extent.width, config.extent.height);
+        let swapchain = unsafe { self.inner.create_swapchain(device, config, stamp, old)? };
         *swap_chain = Some(swapchain);
+        self.stamp_source.commit(stamp);
+        if let Some(configured) = super::swapchain_interceptor().on_surface_configured {
+            configured(stamp);
+        }
 
         Ok(())
     }
