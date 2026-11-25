@@ -1,7 +1,8 @@
 use super::SolarikLighting;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 use bevy_anti_alias::dlss::{
-    Dlss, DlssRayReconstructionFeature, ViewDlssRayReconstructionTextures,
+    Dlss, DlssRayReconstructionFeature, DlssRayReconstructionGuideStatus,
+    ViewDlssRayReconstructionTextures,
 };
 use bevy_camera::MainPassResolutionOverride;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -97,6 +98,7 @@ pub fn prepare_solari_lighting_resources(
             Option<&SolarikLightingResources>,
             Option<&MainPassResolutionOverride>,
             Has<Dlss<DlssRayReconstructionFeature>>,
+            Has<DlssRayReconstructionGuideStatus>,
         ),
         With<SolarikLighting>,
     >,
@@ -107,8 +109,21 @@ pub fn prepare_solari_lighting_resources(
         #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
         let (entity, camera, solarik_lighting_resources, resolution_override) = query_item;
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-        let (entity, camera, solarik_lighting_resources, resolution_override, has_dlss_rr) =
-            query_item;
+        let (
+            entity,
+            camera,
+            solarik_lighting_resources,
+            resolution_override,
+            has_dlss_rr,
+            has_guide_status,
+        ) = query_item;
+
+        #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+        if has_dlss_rr && !has_guide_status {
+            commands
+                .entity(entity)
+                .insert(DlssRayReconstructionGuideStatus::default());
+        }
 
         let Some(mut view_size) = camera.physical_viewport_size else {
             continue;
@@ -311,7 +326,9 @@ pub fn prepare_solari_lighting_resources(
                 sample_count: 1,
                 dimension: TextureDimension::D2,
                 format: TextureFormat::Rgba8Unorm,
-                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING,
+                usage: TextureUsages::TEXTURE_BINDING
+                    | TextureUsages::STORAGE_BINDING
+                    | TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             let diffuse_albedo_view = diffuse_albedo.create_view(&TextureViewDescriptor::default());

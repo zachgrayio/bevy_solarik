@@ -37,6 +37,7 @@ pub(super) trait Surface: Send + Sync + 'static {
         &self,
         device: &super::Device,
         config: &crate::SurfaceConfiguration,
+        stamp: crate::surface_stamp::SurfaceStamp,
         provided_old_swapchain: Option<Box<dyn Swapchain>>,
     ) -> Result<Box<dyn Swapchain>, crate::SurfaceError>;
 
@@ -53,6 +54,7 @@ pub(super) trait Surface: Send + Sync + 'static {
 }
 
 pub(super) trait Swapchain: Send + Sync + 'static {
+    fn presentation_stamp(&self) -> crate::surface_stamp::SurfaceStamp;
     /// Releases all resources associated with the swapchain, without
     /// destroying the swapchain itself. Must be called before calling
     /// either [`Surface::create_swapchain`] or dropping the swapchain.

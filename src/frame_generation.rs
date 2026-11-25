@@ -14,7 +14,7 @@
 //! extra frame at present. [`present_counters`] reports rendered vs presented.
 
 use bevy_app::{App, Plugin};
-use bevy_camera::MainPassResolutionOverride;
+use bevy_camera::{MainPassResolutionOverride, Projection};
 use bevy_core_pipeline::{
     prepass::ViewPrepassTextures,
     schedule::{Core3d, Core3dSystems},
@@ -23,6 +23,8 @@ use bevy_diagnostic::FrameCount;
 use bevy_ecs::prelude::*;
 use bevy_math::{Mat4, Vec4Swizzles};
 use bevy_render::camera::ExtractedCamera;
+#[cfg(any(feature = "dlss_frame_generation", feature = "fsr_frame_generation"))]
+use bevy_render::render_resource::CommandEncoderDescriptor;
 use bevy_render::{
     RenderApp,
     camera::TemporalJitter,
@@ -33,9 +35,115 @@ use bevy_render::{
 #[cfg(feature = "fsr_frame_generation")]
 use {
     bevy_camera::NormalizedRenderTarget,
-    bevy_render::render_resource::CommandEncoderDescriptor,
     std::sync::atomic::{AtomicBool, Ordering},
 };
+
+/// Portable surface identity when the Streamline integration is not compiled.
+#[cfg(not(feature = "dlss_frame_generation"))]
+pub use bevy_render::view::window::WindowSurfaceStamp as SurfaceStamp;
+/// Copied native surface identity used by the presentation pause protocol.
+#[cfg(feature = "dlss_frame_generation")]
+pub use solarik_streamline_wgpu::SurfaceStamp;
+
+/// Temporary application-driven window transaction; never changes user FG settings.
+#[derive(Clone, Debug)]
+pub struct PresentationPause {
+    #[cfg(feature = "dlss_frame_generation")]
+    inner: solarik_streamline_wgpu::PresentationPause,
+}
+
+impl PresentationPause {
+    /// Returns pending when a real Present cannot run (for example minimized).
+    pub fn is_ready(&self) -> Result<bool, &'static str> {
+        #[cfg(feature = "dlss_frame_generation")]
+        {
+            self.inner.is_ready()
+        }
+        #[cfg(not(feature = "dlss_frame_generation"))]
+        {
+            Ok(true)
+        }
+    }
+    /// Mark issuance immediately before changing the native window request.
+    /// Runtime ownership then survives cancellation of the caller's lease.
+    pub fn mark_native_mutation_issued(&self, request_epoch: u64) -> Result<(), &'static str> {
+        #[cfg(feature = "dlss_frame_generation")]
+        {
+            self.inner.mark_native_mutation_issued(request_epoch)
+        }
+        #[cfg(not(feature = "dlss_frame_generation"))]
+        {
+            let _ = request_epoch;
+            Ok(())
+        }
+    }
+    /// Arm only after native application acknowledgment, before requesting a new
+    /// renderer configuration for this epoch and expected physical extent.
+    pub fn arm_after_native_applied(
+        &self,
+        request_epoch: u64,
+        expected_width: u32,
+        expected_height: u32,
+    ) -> Result<(), &'static str> {
+        #[cfg(feature = "dlss_frame_generation")]
+        {
+            self.inner
+                .arm_after_native_applied(request_epoch, expected_width, expected_height)
+        }
+        #[cfg(not(feature = "dlss_frame_generation"))]
+        {
+            let _ = (request_epoch, expected_width, expected_height);
+            Ok(())
+        }
+    }
+    /// Compatibility-only failed finish. Active SDK transactions require the
+    /// native-applied epoch API, not an arbitrary following Present.
+    pub fn finish(&self) {
+        #[cfg(feature = "dlss_frame_generation")]
+        self.inner.finish();
+    }
+    /// Whether a configured, matching new-surface Present completed.
+    pub fn is_complete(&self) -> bool {
+        #[cfg(feature = "dlss_frame_generation")]
+        {
+            self.inner.is_complete()
+        }
+        #[cfg(not(feature = "dlss_frame_generation"))]
+        {
+            true
+        }
+    }
+}
+
+/// Whether SDK presentation requires a target identity and pause transaction.
+pub fn presentation_pause_required() -> bool {
+    #[cfg(feature = "dlss_frame_generation")]
+    {
+        solarik_streamline_wgpu::presentation_pause_required()
+    }
+    #[cfg(not(feature = "dlss_frame_generation"))]
+    {
+        false
+    }
+}
+
+/// Request a target-bound pause through the normal ordered rendering path.
+pub fn request_presentation_pause_for_surface(baseline: SurfaceStamp) -> PresentationPause {
+    #[cfg(not(feature = "dlss_frame_generation"))]
+    let _ = baseline;
+    PresentationPause {
+        #[cfg(feature = "dlss_frame_generation")]
+        inner: solarik_streamline_wgpu::request_presentation_pause_for_surface(baseline),
+    }
+}
+
+/// Compatibility only: active SDK presentation rejects a missing surface identity.
+pub fn request_presentation_pause() -> PresentationPause {
+    PresentationPause {
+        #[cfg(feature = "dlss_frame_generation")]
+        inner: solarik_streamline_wgpu::request_presentation_pause(),
+    }
+}
 
 /// Real runtime capabilities queried at startup from NVIDIA Streamline (`slInit`
 /// + `slIsFeatureSupported(kFeatureDLSS_G)` + `slDLSSGGetState`) and AMD FFX.
@@ -96,6 +204,68 @@ pub fn present_counters() -> Option<PresentCounters> {
     None
 }
 
+/// Environment variable selecting the startup frame-generation presenter.
+///
+/// Accepted values (case-insensitive): `auto`, `streamline`, `dlss`, `fsr`,
+/// `fidelityfx`, `off`, `disabled`. Unset or unknown values default to [`FrameGenerationProviderPreference::Auto`].
+pub const FRAME_GENERATION_PROVIDER_ENV: &str = "SOLARIK_FRAME_GENERATION_PROVIDER";
+
+/// Immutable startup preference for which frame-generation presenter owns
+/// swapchain presentation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameGenerationProviderPreference {
+    /// Prefer NVIDIA Streamline DLSS-G when supported, otherwise AMD FidelityFX FG.
+    #[default]
+    Auto,
+    /// Prefer NVIDIA Streamline DLSS-G only; do not install FidelityFX FG presentation.
+    Streamline,
+    /// Use AMD FidelityFX FG exclusively for presentation; exclude `kFeatureDLSS_G`
+    /// from Streamline while keeping Streamline SR/RR/Reflex available.
+    FidelityFx,
+    /// Disable frame-generation presentation hooks for both providers.
+    Disabled,
+}
+
+impl FrameGenerationProviderPreference {
+    /// Parse a startup provider string (trimmed, ASCII case-insensitive).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "streamline" | "dlss" => Some(Self::Streamline),
+            "fsr" | "fidelityfx" => Some(Self::FidelityFx),
+            "off" | "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    /// Startup preference parsed once from [`FRAME_GENERATION_PROVIDER_ENV`] (default `Auto`).
+    pub fn from_env() -> Self {
+        static PREFERENCE: std::sync::OnceLock<FrameGenerationProviderPreference> =
+            std::sync::OnceLock::new();
+        *PREFERENCE.get_or_init(|| match std::env::var(FRAME_GENERATION_PROVIDER_ENV) {
+            Ok(raw) => Self::parse(&raw).unwrap_or_else(|| {
+                tracing::warn!(
+                    env = FRAME_GENERATION_PROVIDER_ENV,
+                    value = %raw,
+                    "Unknown frame generation provider preference; defaulting to Auto"
+                );
+                Self::Auto
+            }),
+            Err(_) => Self::Auto,
+        })
+    }
+
+    /// Whether Streamline should load `kFeatureDLSS_G` and own swapchain proxies.
+    pub const fn allows_streamline_dlss_g(self) -> bool {
+        matches!(self, Self::Auto | Self::Streamline)
+    }
+
+    /// Whether AMD FidelityFX FG may install swapchain presentation hooks.
+    pub const fn allows_fidelityfx(self) -> bool {
+        matches!(self, Self::Auto | Self::FidelityFx)
+    }
+}
+
 /// Diagnostic opt-out: `SOLARIK_FSR_FG_SWAPCHAIN=0` keeps the plain wgpu
 /// swapchain and reports FSR Frame Generation as unsupported.
 #[cfg(feature = "fsr_frame_generation")]
@@ -126,6 +296,73 @@ impl Drop for StreamlineShutdownGuard {
     }
 }
 
+/// Route Vulkan entry-point loading through `sl.interposer.dll` **before**
+/// `RenderPlugin` builds the device.
+///
+/// DLSS-G on Vulkan has no "bring your own swapchain" entry point: Streamline's
+/// `vkCreateSwapchainKHR`/`vkQueuePresentKHR` proxies must own present, and they
+/// only accept a surface whose `VkInstance` the interposer created. Calling this
+/// before device creation is what makes that true; without it Vulkan reports
+/// frame generation as unavailable rather than crashing on `Invalid surface`.
+///
+/// DX12 also requires SDK initialization before graphics API creation; use
+/// [`install_dx12_preinit`] for its factory proxy, without a Vulkan entry hook.
+#[cfg(feature = "dlss_frame_generation")]
+pub fn install_vulkan_preinit(project_id: &str) {
+    let preference = FrameGenerationProviderPreference::from_env();
+    let enable_dlss_g = preference.allows_streamline_dlss_g();
+    match solarik_streamline_wgpu::preinit_with_options(project_id, false, enable_dlss_g) {
+        Ok(()) => tracing::info!(
+            ?preference,
+            dlss_g = enable_dlss_g,
+            "Streamline Vulkan pre-init armed"
+        ),
+        Err(error) => {
+            tracing::info!(%error, "Streamline Vulkan pre-init unavailable; frame generation off")
+        }
+    }
+}
+
+#[cfg(not(feature = "dlss_frame_generation"))]
+pub fn install_vulkan_preinit(_project_id: &str) {}
+
+/// Initialize Streamline before DX12 graphics API creation so its factory-create
+/// proxy is ready. Call before FFX registration and `RenderPlugin`; unlike Vulkan,
+/// this does not install a Vulkan entry-library hook.
+#[cfg(feature = "dlss_frame_generation")]
+pub fn install_dx12_preinit(project_id: &str) {
+    let preference = FrameGenerationProviderPreference::from_env();
+    let enable_dlss_g = preference.allows_streamline_dlss_g();
+    match solarik_streamline_wgpu::preinit_with_options(project_id, true, enable_dlss_g) {
+        Ok(()) => tracing::info!(
+            ?preference,
+            dlss_g = enable_dlss_g,
+            "Streamline DX12 pre-init armed"
+        ),
+        Err(error) => {
+            tracing::info!(%error, "Streamline DX12 pre-init unavailable; frame generation off")
+        }
+    }
+}
+
+#[cfg(not(feature = "dlss_frame_generation"))]
+pub fn install_dx12_preinit(_project_id: &str) {}
+
+/// Total frames actually presented to the swapchain (real + generated) from the
+/// active frame-generation presenter (Streamline `slDLSSGGetState` or FidelityFX
+/// swapchain present counter).
+pub fn total_presented_frames() -> u64 {
+    #[cfg(feature = "dlss_frame_generation")]
+    let sl = solarik_streamline_wgpu::total_presented_frames();
+    #[cfg(not(feature = "dlss_frame_generation"))]
+    let sl = 0u64;
+    #[cfg(feature = "fsr_frame_generation")]
+    let fsr = solarik_fsr_wgpu::frame_generation::present_counters().map_or(0, |c| c.presented);
+    #[cfg(not(feature = "fsr_frame_generation"))]
+    let fsr = 0u64;
+    sl.saturating_add(fsr)
+}
+
 /// Plugin installing Streamline DLSS-G + Reflex and AMD FSR Frame Generation.
 #[derive(Clone, Debug)]
 pub struct FrameGenerationPlugin {
@@ -135,6 +372,10 @@ pub struct FrameGenerationPlugin {
 
 impl Plugin for FrameGenerationPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(all(windows, feature = "dlss_frame_generation"))]
+        if !app.is_plugin_added::<crate::graphics_session::SessionPlugin>() {
+            app.add_plugins(crate::graphics_session::SessionPlugin);
+        }
         app.init_resource::<FrameGenerationRuntimeCapabilities>()
             .init_resource::<FrameGenerationRuntimeSettings>()
             .add_plugins(ExtractResourcePlugin::<FrameGenerationRuntimeSettings>::default());
@@ -149,10 +390,16 @@ impl Plugin for FrameGenerationPlugin {
                 .clone()
         };
 
+        let provider_preference = FrameGenerationProviderPreference::from_env();
+        #[cfg(not(any(feature = "dlss_frame_generation", feature = "fsr_frame_generation")))]
+        let _ = provider_preference;
         let mut caps = FrameGenerationRuntimeCapabilities::default();
 
         #[cfg(feature = "dlss_frame_generation")]
         {
+            solarik_streamline_wgpu::set_dlss_g_enabled(
+                provider_preference.allows_streamline_dlss_g(),
+            );
             match solarik_streamline_wgpu::attach_device(&self.project_id, &wgpu_device) {
                 Ok(sl_caps) => {
                     caps.dlss_g_supported = sl_caps.dlss_g_supported;
@@ -177,7 +424,11 @@ impl Plugin for FrameGenerationPlugin {
                 .world()
                 .resource::<RenderDevice>()
                 .clone();
-            caps.fsr_fg_supported = install_fsr_presentation(&render_device, caps.dlss_g_supported);
+            caps.fsr_fg_supported = if provider_preference.allows_fidelityfx() {
+                install_fsr_presentation(&render_device, caps.dlss_g_supported)
+            } else {
+                false
+            };
             app.sub_app_mut(RenderApp).insert_resource(FsrFgLog {
                 debug_checks: std::env::var(FSR_FG_DEBUG_CHECKS_ENV).is_ok_and(|v| v == "1"),
                 ..FsrFgLog::default()
@@ -187,9 +438,9 @@ impl Plugin for FrameGenerationPlugin {
         app.insert_resource(caps);
         #[cfg(feature = "dlss_frame_generation")]
         {
-            #[cfg(all(windows, feature = "dx12_ngx_init"))]
+            #[cfg(windows)]
             let retained = crate::graphics_session::retain(app);
-            #[cfg(not(all(windows, feature = "dx12_ngx_init")))]
+            #[cfg(not(windows))]
             let retained = false;
             // D3D12 shared NGX ownership is carried by the outer runner + SDK leases,
             // never by a main-world guard which can disappear before RenderApp.
@@ -241,13 +492,9 @@ struct PrevCameraState {
 
 #[cfg(feature = "dlss_frame_generation")]
 fn mat4_to_row_major(m: Mat4) -> [[f32; 4]; 4] {
-    let cols = m.to_cols_array_2d();
-    [
-        [cols[0][0], cols[1][0], cols[2][0], cols[3][0]],
-        [cols[0][1], cols[1][1], cols[2][1], cols[3][1]],
-        [cols[0][2], cols[1][2], cols[2][2], cols[3][2]],
-        [cols[0][3], cols[1][3], cols[2][3], cols[3][3]],
-    ]
+    // Streamline uses row-vector transforms; Glam uses column vectors. Store
+    // Glam columns as Streamline rows, including translation in the last row.
+    m.to_cols_array_2d()
 }
 
 /// FidelityFX depth convention and camera planes for a Bevy projection.
@@ -295,6 +542,7 @@ fn run_frame_generation(
         Option<&MainPassResolutionOverride>,
         Option<&TemporalJitter>,
         Option<&ExtractedCamera>,
+        Option<&Projection>,
     )>,
     settings: Res<FrameGenerationRuntimeSettings>,
     caps: Res<FrameGenerationRuntimeCapabilities>,
@@ -304,7 +552,10 @@ fn run_frame_generation(
     mut prev: Local<PrevCameraState>,
     mut ctx: RenderContext,
 ) {
-    let (extracted_view, view_target, prepass, res_override, jitter, camera) = view.into_inner();
+    let (extracted_view, view_target, prepass, res_override, jitter, camera, projection_info) =
+        view.into_inner();
+    #[cfg(not(feature = "dlss_frame_generation"))]
+    let _ = projection_info;
     let display_size = extracted_view.viewport.zw();
     if display_size.x == 0 || display_size.y == 0 {
         return;
@@ -338,7 +589,9 @@ fn run_frame_generation(
             clip_to_prev_clip: mat4_to_row_major(clip_to_prev_clip),
             prev_clip_to_clip: mat4_to_row_major(prev_clip_to_clip),
             jitter_offset: jitter.map_or([0.0, 0.0], |j| (-j.offset).to_array()),
-            mvec_scale: [1.0, 1.0],
+            // Streamline normalizes motion; it applies render dimensions when
+            // forwarding normalized vectors to NGX's pixel-space parameters.
+            mvec_scale: [-1.0, -1.0],
             camera_pos: extracted_view.world_from_view.translation().into(),
             camera_up: extracted_view.world_from_view.up().as_vec3().into(),
             camera_right: extracted_view.world_from_view.right().as_vec3().into(),
@@ -351,10 +604,27 @@ fn run_frame_generation(
             },
             ..Default::default()
         };
+        let camera_planes = fg_camera(clip_from_view);
+        constants.camera_near = camera_planes.near;
+        constants.camera_far =
+            projection_info.map_or(camera_planes.far, |projection| projection.far());
+        constants.camera_fov = camera_planes.fov_y;
+        constants.orthographic_projection = if clip_from_view.w_axis.w == 0.0 {
+            solarik_streamline_wgpu::abi::BOOLEAN_FALSE
+        } else {
+            solarik_streamline_wgpu::abi::BOOLEAN_TRUE
+        };
         constants.depth_inverted = solarik_streamline_wgpu::abi::BOOLEAN_TRUE;
         constants.camera_motion_included = solarik_streamline_wgpu::abi::BOOLEAN_TRUE;
 
         let color_view = view_target.main_texture_view();
+        // Keep native tagging on a fresh encoder, after tracked input barriers.
+        // Turning DLSS-G off needs no native command buffer.
+        let mut sl_encoder = (num_frames > 0).then(|| {
+            render_device.create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("streamline_dlss_fg"),
+            })
+        });
         match solarik_streamline_wgpu::record_frame(
             frame_count.0,
             num_frames,
@@ -364,17 +634,16 @@ fn run_frame_generation(
             color_view,
             [render_size.x, render_size.y],
             [display_size.x, display_size.y],
-            Some(ctx.command_encoder()),
+            ctx.command_encoder(),
+            sl_encoder.as_mut(),
         ) {
             Ok(state) => {
                 if num_frames > 0 && !prev.logged_active {
                     prev.logged_active = true;
                     tracing::info!(
                         num_frames,
-                        status = state.status,
-                        presented = state.num_frames_actually_presented,
                         max_gen = state.max_generated_frames,
-                        "Streamline DLSS-G frame generation active"
+                        "Streamline DLSS-G frame generation request recorded"
                     );
                 } else if num_frames == 0 {
                     prev.logged_active = false;
@@ -383,6 +652,9 @@ fn run_frame_generation(
             Err(error) => {
                 tracing::debug!(%error, "Streamline record_frame skipped");
             }
+        }
+        if let Some(sl_encoder) = sl_encoder {
+            ctx.add_command_buffer(sl_encoder.finish());
         }
     }
 
@@ -485,8 +757,42 @@ fn run_frame_generation(
 
 #[cfg(test)]
 mod tests {
-    use super::fg_camera;
+    use super::{FrameGenerationProviderPreference, fg_camera};
     use bevy_math::Mat4;
+
+    #[test]
+    fn provider_preference_parses_all_aliases_and_policies() {
+        use FrameGenerationProviderPreference as Pref;
+
+        assert_eq!(Pref::default(), Pref::Auto);
+        for (raw, expected) in [
+            ("auto", Pref::Auto),
+            (" AUTO ", Pref::Auto),
+            ("streamline", Pref::Streamline),
+            ("dlss", Pref::Streamline),
+            ("DLSS", Pref::Streamline),
+            ("fsr", Pref::FidelityFx),
+            ("fidelityfx", Pref::FidelityFx),
+            ("FidelityFX", Pref::FidelityFx),
+            ("off", Pref::Disabled),
+            ("disabled", Pref::Disabled),
+            ("DISABLED", Pref::Disabled),
+        ] {
+            assert_eq!(Pref::parse(raw), Some(expected), "raw={raw:?}");
+        }
+        for unknown in ["", "unknown", "xess", "metal"] {
+            assert_eq!(Pref::parse(unknown), None, "unknown={unknown:?}");
+        }
+
+        assert!(Pref::Auto.allows_streamline_dlss_g());
+        assert!(Pref::Auto.allows_fidelityfx());
+        assert!(Pref::Streamline.allows_streamline_dlss_g());
+        assert!(!Pref::Streamline.allows_fidelityfx());
+        assert!(!Pref::FidelityFx.allows_streamline_dlss_g());
+        assert!(Pref::FidelityFx.allows_fidelityfx());
+        assert!(!Pref::Disabled.allows_streamline_dlss_g());
+        assert!(!Pref::Disabled.allows_fidelityfx());
+    }
 
     #[test]
     fn perspective_cameras_use_inverted_infinite_depth() {

@@ -14,7 +14,10 @@ pub mod abi;
 mod runtime;
 
 pub use runtime::{
-    Error, FrameGenCapabilities, FrameGenState, RetiredRuntime, Streamline, attach_device,
-    current_capabilities, install_swapchain_interception, is_ready, record_frame, shutdown,
-    shutdown_retaining_runtime,
+    Error, FrameGenCapabilities, FrameGenState, PresentationPause, RetiredRuntime, Streamline,
+    SurfaceStamp, attach_device, current_capabilities, dlss_optimal_render_size, evaluate_dlss_rr,
+    evaluate_dlss_sr, install_swapchain_interception, is_ready, is_vulkan_interposed, preinit,
+    preinit_with_options, presentation_pause_required, record_frame, request_presentation_pause,
+    request_presentation_pause_for_surface, set_dlss_g_enabled, shutdown,
+    shutdown_retaining_runtime, total_presented_frames,
 };

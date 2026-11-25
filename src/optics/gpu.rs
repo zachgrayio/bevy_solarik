@@ -130,8 +130,8 @@ fn initialize(mut commands: Commands, server: Res<AssetServer>, cache: Res<Pipel
         stages.try_into().ok().expect("three optical passes"),
     ));
 }
-fn allocate(device: &RenderDevice, width: u32, height: u32, reset: u32) -> ViewState {
-    let scratch = device
+fn allocate_scratch(device: &RenderDevice, width: u32, height: u32) -> TextureView {
+    device
         .create_texture(&TextureDescriptor {
             label: Some("optical scattering scratch"),
             size: Extent3d {
@@ -146,9 +146,11 @@ fn allocate(device: &RenderDevice, width: u32, height: u32, reset: u32) -> ViewS
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         })
-        .create_view(&TextureViewDescriptor::default());
+        .create_view(&TextureViewDescriptor::default())
+}
+fn allocate(device: &RenderDevice, width: u32, height: u32, reset: u32) -> ViewState {
     ViewState {
-        scratch,
+        scratch: allocate_scratch(device, width, height),
         width,
         height,
         state: device.create_buffer(&BufferDescriptor {
@@ -199,7 +201,12 @@ fn compose(
         .entry(id)
         .or_insert_with(|| allocate(&device, size.x, size.y, settings.reset));
     if state.width != size.x || state.height != size.y {
-        *state = allocate(&device, size.x, size.y, settings.reset);
+        // Resize only resolution-dependent storage. Meter EV/history, reset token,
+        // timing, uniforms and in-flight readbacks belong to the camera, not its surface.
+        // Dropping the old view leaves submitted GPU work to wgpu's normal lifetime tracking.
+        state.scratch = allocate_scratch(&device, size.x, size.y);
+        state.width = size.x;
+        state.height = size.y;
     }
     let now = Instant::now();
     let dt = now.duration_since(state.last).as_secs_f32();

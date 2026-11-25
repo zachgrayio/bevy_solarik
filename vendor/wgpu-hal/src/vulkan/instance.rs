@@ -554,6 +554,7 @@ impl super::Instance {
             crate::vulkan::swapchain::NativeSurface::from_vk_surface_khr(self, surface, hwnd);
 
         super::Surface {
+            stamp_source: Default::default(),
             swapchain: RwLock::new(None),
             inner: Box::new(native_surface),
         }
@@ -580,7 +581,12 @@ impl super::Instance {
             #[cfg(target_env = "ohos")]
             let loaded = ash::Entry::load_from("libvulkan.so");
             #[cfg(not(target_env = "ohos"))]
-            let loaded = ash::Entry::load();
+            let loaded = match crate::vulkan::vulkan_entry_library() {
+                // A frame-generation interposer must own instance/device creation so
+                // its swapchain proxy functions can intercept `vkQueuePresentKHR`.
+                Some(library) => ash::Entry::load_from(library.as_str()),
+                None => ash::Entry::load(),
+            };
             loaded
         }
         .map_err(|err| {
@@ -1014,8 +1020,15 @@ impl crate::Surface for super::Surface {
             unsafe { old.release_resources(device) };
         }
 
-        let swapchain = unsafe { self.inner.create_swapchain(device, config, old)? };
+        let stamp = self
+            .stamp_source
+            .candidate(config.extent.width, config.extent.height);
+        let swapchain = unsafe { self.inner.create_swapchain(device, config, stamp, old)? };
         *swap_chain = Some(swapchain);
+        self.stamp_source.commit(stamp);
+        if let Some(configured) = super::swapchain_interceptor().on_surface_configured {
+            configured(stamp);
+        }
 
         Ok(())
     }

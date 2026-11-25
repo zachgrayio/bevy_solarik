@@ -368,7 +368,8 @@ fn replace_primary_surface(pixel_id: vec2<u32>, ray_hit: ResolvedRayHitFull, mir
     textureStore(specular_motion_vectors, pixel_id, vec4(specular_motion_vector, vec2(0.0)));
     textureStore(diffuse_albedo, pixel_id, vec4(calculate_diffuse_color(ray_hit.material.base_color, ray_hit.material.metallic, 0.0, 0.0), 0.0));
     textureStore(specular_albedo, pixel_id, vec4(env_brdf_approx2(F0, ray_hit.material.roughness, virtual_normal, wo), 0.0));
-    textureStore(normal_roughness, pixel_id, vec4(virtual_normal, ray_hit.material.perceptual_roughness));
+    // Match the ordinary DLSS RR guide's linear-roughness convention.
+    textureStore(normal_roughness, pixel_id, vec4(virtual_normal, ray_hit.material.roughness));
 }
 
 @if((DLSS_RR_GUIDE_BUFFERS))

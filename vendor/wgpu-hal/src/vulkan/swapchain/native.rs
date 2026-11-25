@@ -183,6 +183,7 @@ impl Surface for NativeSurface {
         &self,
         device: &crate::vulkan::Device,
         config: &crate::SurfaceConfiguration,
+        stamp: crate::surface_stamp::SurfaceStamp,
         provided_old_swapchain: Option<Box<dyn Swapchain>>,
     ) -> Result<Box<dyn Swapchain>, crate::SurfaceError> {
         profiling::scope!("Device::create_swapchain");
@@ -208,18 +209,45 @@ impl Surface for NativeSurface {
             raw_view_formats.push(original_format);
         }
 
+        let mut swapchain_format = original_format;
+        let mut image_usage = conv::map_texture_usage(config.usage);
+        if crate::vulkan::vulkan_entry_library().is_some() {
+            // Streamline `sl.dlss_g` rejects SRGB swapchain image formats
+            // (`slHookVkCreateSwapchainKHR: SRGB format cannot be used for
+            // swap-chain back buffers when using sl.dlss_g`) and requires
+            // STORAGE usage. Create a mutable UNORM swapchain with the SRGB
+            // format in the view format list so wgpu's SRGB views keep exact
+            // color space while DLSS-G can run compute/optical-flow on it.
+            let unorm = match original_format {
+                vk::Format::B8G8R8A8_SRGB => Some(vk::Format::B8G8R8A8_UNORM),
+                vk::Format::R8G8B8A8_SRGB => Some(vk::Format::R8G8B8A8_UNORM),
+                _ => None,
+            };
+            if let Some(unorm) = unorm {
+                swapchain_format = unorm;
+                raw_flags |= vk::SwapchainCreateFlagsKHR::MUTABLE_FORMAT;
+                if !raw_view_formats.contains(&original_format) {
+                    raw_view_formats.push(original_format);
+                }
+                if !raw_view_formats.contains(&unorm) {
+                    raw_view_formats.push(unorm);
+                }
+            }
+            image_usage |= vk::ImageUsageFlags::STORAGE;
+        }
+
         let mut info = vk::SwapchainCreateInfoKHR::default()
             .flags(raw_flags)
             .surface(self.raw)
             .min_image_count(config.maximum_frame_latency + 1) // TODO: https://github.com/gfx-rs/wgpu/issues/2869
-            .image_format(original_format)
+            .image_format(swapchain_format)
             .image_color_space(color_space)
             .image_extent(vk::Extent2D {
                 width: config.extent.width,
                 height: config.extent.height,
             })
             .image_array_layers(config.extent.depth_or_array_layers)
-            .image_usage(conv::map_texture_usage(config.usage))
+            .image_usage(image_usage)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
             .composite_alpha(conv::map_composite_alpha_mode(config.composite_alpha_mode))
@@ -234,6 +262,19 @@ impl Surface for NativeSurface {
         }
 
         let interceptor = crate::vulkan::swapchain_interceptor();
+        log::info!(target: "solarik_vk_swapchain", "create begin old={:?} format={:?} present_mode={:?} extent={:?} device={:?} thread={:?}", old_swapchain, info.image_format, info.present_mode, info.image_extent, device.shared.raw.handle(), std::thread::current().id());
+        if let Some(before_recreate) = interceptor.on_before_swapchain_recreate {
+            log::info!(target: "solarik_vk_swapchain", "create callback begin");
+            before_recreate();
+            log::info!(target: "solarik_vk_swapchain", "create callback end");
+        }
+        if crate::vulkan::vulkan_entry_library().is_some() {
+            log::info!(target: "solarik_vk_swapchain", "create idle begin");
+            // Drain Streamline DLSS-G's in-flight optical-flow/present work before
+            // creating/recreating the swapchain on resize/fullscreen.
+            let idle = unsafe { device.shared.raw.device_wait_idle() };
+            log::info!(target: "solarik_vk_swapchain", "create idle end result={:?}", idle);
+        }
         let result = {
             profiling::scope!("vkCreateSwapchainKHR");
             if let Some(create_fn) = interceptor.create_swapchain {
@@ -252,6 +293,7 @@ impl Surface for NativeSurface {
             }
         };
 
+        log::info!(target: "solarik_vk_swapchain", "create returned old={:?} result={:?}", old_swapchain, result);
         let raw = match result {
             Ok(swapchain) => swapchain,
             Err(error) => {
@@ -330,6 +372,7 @@ impl Surface for NativeSurface {
             .collect::<Vec<_>>();
 
         Ok(Box::new(NativeSwapchain {
+            stamp,
             raw,
             functor,
             device: Arc::clone(&device.shared),
@@ -354,6 +397,7 @@ impl Surface for NativeSurface {
 }
 
 pub(crate) struct NativeSwapchain {
+    stamp: crate::surface_stamp::SurfaceStamp,
     raw: vk::SwapchainKHR,
     functor: khr::swapchain::Device,
     device: Arc<DeviceShared>,
@@ -410,7 +454,14 @@ pub(crate) struct NativeSwapchain {
 
 impl Drop for NativeSwapchain {
     fn drop(&mut self) {
+        log::info!(target: "solarik_vk_swapchain", "destroy begin handle={:?} device={:?} thread={:?}", self.raw, self.device.raw.handle(), std::thread::current().id());
         let interceptor = crate::vulkan::swapchain_interceptor();
+        if let Some(before_recreate) = interceptor.on_before_swapchain_recreate {
+            before_recreate();
+        }
+        if crate::vulkan::vulkan_entry_library().is_some() {
+            let _ = unsafe { self.device.raw.device_wait_idle() };
+        }
         unsafe {
             if let Some(destroy_fn) = interceptor.destroy_swapchain {
                 destroy_fn(self.device.raw.handle(), self.raw, core::ptr::null());
@@ -418,23 +469,39 @@ impl Drop for NativeSwapchain {
                 self.functor.destroy_swapchain(self.raw, None);
             }
         }
+        log::info!(target: "solarik_vk_swapchain", "destroy end handle={:?}", self.raw);
     }
 }
 
 impl Swapchain for NativeSwapchain {
+    fn presentation_stamp(&self) -> crate::surface_stamp::SurfaceStamp {
+        self.stamp
+    }
     unsafe fn release_resources(&mut self, device: &crate::vulkan::Device) {
         profiling::scope!("Swapchain::release_resources");
+        log::info!(target: "solarik_vk_swapchain", "release resources begin handle={:?} thread={:?}", self.raw, std::thread::current().id());
+        // This is the first wait during configure/unconfigure, before creation
+        // or Drop callbacks. Stop provider presentation while old resources live.
+        if let Some(before_recreate) =
+            crate::vulkan::swapchain_interceptor().on_before_swapchain_recreate
         {
+            log::info!(target: "solarik_vk_swapchain", "release callback begin handle={:?}", self.raw);
+            before_recreate();
+            log::info!(target: "solarik_vk_swapchain", "release callback end handle={:?}", self.raw);
+        }
+        {
+            log::info!(target: "solarik_vk_swapchain", "first idle begin handle={:?}", self.raw);
             profiling::scope!("vkDeviceWaitIdle");
             // We need to also wait until all presentation work is done. Because there is no way to portably wait until
             // the presentation work is done, we are forced to wait until the device is idle.
-            let _ = unsafe {
+            let idle = unsafe {
                 device
                     .shared
                     .raw
                     .device_wait_idle()
                     .map_err(map_host_device_oom_and_lost_err)
             };
+            log::info!(target: "solarik_vk_swapchain", "first idle end handle={:?} result={:?}", self.raw, idle);
         };
 
         if let Some(fence) = self.fence {
@@ -691,6 +758,12 @@ impl Swapchain for NativeSwapchain {
             };
             if let Some(after) = interceptor.on_present_end {
                 after();
+            }
+            if let Some(result) = interceptor.on_present_result {
+                result(res.is_ok());
+            }
+            if let Some(result) = interceptor.on_present_stamp {
+                result(self.stamp, res.is_ok());
             }
             res.map_err(|error| {
                 match error {

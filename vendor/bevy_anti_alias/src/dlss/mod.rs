@@ -15,8 +15,10 @@
 //! 6. Custom rendering code, including third party crates, should account for the optional `MainPassResolutionOverride` to work with DLSS (see the `custom_render_phase` example)
 
 mod extract;
+mod newprivateprobe;
 mod node;
 mod prepare;
+mod streamline;
 
 pub use dlss_wgpu::DlssPerfQualityMode;
 
@@ -88,7 +90,9 @@ impl Plugin for DlssInitPlugin {
                                     .insert::<DlssRayReconstructionSupported>();
                             }
                         }
-                        Err(_) => {}
+                        Err(err) => {
+                            tracing::warn!(%err, "DLSS register_instance_extensions failed");
+                        }
                     }
                 },
             );
@@ -119,7 +123,9 @@ impl Plugin for DlssInitPlugin {
                                     .remove::<DlssRayReconstructionSupported>();
                             }
                         }
-                        Err(_) => {}
+                        Err(err) => {
+                            tracing::warn!(%err, "DLSS register_device_extensions failed");
+                        }
                     }
                 },
             )
@@ -167,10 +173,87 @@ impl Plugin for DlssPlugin {
 
         let project_id = app.world().get_resource::<DlssProjectId>()
             .expect("The `dlss` feature is enabled, but DlssProjectId was not added to the App before DlssPlugin.");
+
+        // Drive DLSS SR and RR through Streamline (`sl.dlss.dll` / `sl.dlss_d.dll`)
+        // instead of direct NGX (`dlss_wgpu`) whenever Streamline owns the device
+        // for DLSS-G: on interposed Windows Vulkan it created the `VkDevice`, and
+        // on Windows DX12 it upgraded the swapchain via `slUpgradeInterface`.
+        // Use a single SR/RR evaluation provider per device. Runtime initialization
+        // alone is not evidence of performance or successful frame generation.
+        let streamline_owns_device = if is_vulkan {
+            solarik_streamline_wgpu::is_vulkan_interposed()
+        } else {
+            solarik_streamline_wgpu::is_ready() || {
+                let stream_project_id = project_id.0.to_string();
+                solarik_streamline_wgpu::attach_device(&stream_project_id, &wgpu_device).is_ok()
+            }
+        };
+        if streamline_owns_device {
+            let project_id_str = project_id.0.to_string();
+            match solarik_streamline_wgpu::attach_device(&project_id_str, &wgpu_device) {
+                Ok(caps) if caps.dlss_sr_supported || caps.dlss_rr_supported => {
+                    if caps.dlss_sr_supported {
+                        app.insert_resource(DlssSuperResolutionSupported);
+                    }
+                    if caps.dlss_rr_supported {
+                        app.insert_resource(DlssRayReconstructionSupported);
+                    }
+                    app.sub_app_mut(RenderApp)
+                        .init_resource::<newprivateprobe::RrProbe>()
+                        .add_systems(
+                            Render,
+                            newprivateprobe::readback.in_set(RenderSystems::Cleanup),
+                        )
+                        .add_systems(
+                            ExtractSchedule,
+                            (
+                                extract::extract_dlss::<DlssSuperResolutionFeature>,
+                                extract::extract_dlss::<DlssRayReconstructionFeature>,
+                            ),
+                        )
+                        .add_systems(
+                            Render,
+                            (
+                                streamline::prepare_dlss_streamline::<DlssSuperResolutionFeature>,
+                                streamline::prepare_dlss_streamline::<DlssRayReconstructionFeature>,
+                            )
+                                .in_set(RenderSystems::PrepareViews)
+                                .before(prepare_view_targets),
+                        )
+                        .add_systems(
+                            Core3d,
+                            (
+                                streamline::dlss_super_resolution_streamline,
+                                streamline::dlss_ray_reconstruction_streamline,
+                            )
+                                .chain()
+                                .in_set(Core3dSystems::EarlyPostProcess),
+                        );
+                    info!(
+                        dlss_sr = caps.dlss_sr_supported,
+                        dlss_rr = caps.dlss_rr_supported,
+                        "DLSS SR/RR enabled via Streamline"
+                    );
+                    return;
+                }
+                Ok(_) => {
+                    info!("Streamline reported DLSS SR unsupported on interposed Vulkan");
+                    return;
+                }
+                Err(err) => {
+                    info!(?err, "Streamline attach_device failed on interposed Vulkan");
+                    return;
+                }
+            }
+        }
+
         let dlss_sdk = dlss_wgpu::DlssSdk::new(project_id.0, wgpu_device);
-        let Ok(dlss_sdk) = dlss_sdk else {
-            info!("DLSS is not supported on this system");
-            return;
+        let dlss_sdk = match dlss_sdk {
+            Ok(sdk) => sdk,
+            Err(err) => {
+                info!(?err, "DLSS is not supported on this system");
+                return;
+            }
         };
 
         if let Some(owners) = app.world().get_resource::<DlssRuntimeKeepalives>() {
@@ -374,6 +457,93 @@ impl DlssFeature for DlssRayReconstructionFeature {
             device.wgpu_device(),
             queue.deref(),
         )
+    }
+}
+
+/// Optional producer/Streamline handshake for ray reconstruction guides.
+///
+/// Producers mark a frame ready only after recording every guide write, before the
+/// RR node runs. Without this component, external producers retain responsibility
+/// for supplying initialized, current-frame guides. Readiness records CPU command
+/// recording, not GPU completion; render graph submission order remains required.
+#[derive(Component)]
+pub struct DlssRayReconstructionGuideStatus {
+    produced_frame: std::sync::atomic::AtomicU64,
+    evaluated_frame: std::sync::atomic::AtomicU64,
+}
+
+impl Default for DlssRayReconstructionGuideStatus {
+    fn default() -> Self {
+        Self {
+            produced_frame: std::sync::atomic::AtomicU64::new(u64::MAX),
+            evaluated_frame: std::sync::atomic::AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+impl DlssRayReconstructionGuideStatus {
+    /// Publish completion of all guide command recording for this frame.
+    pub fn mark_ready(&self, frame: u32) {
+        self.produced_frame
+            .store(u64::from(frame), std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the producer recorded all guides for this exact frame.
+    pub fn is_ready(&self, frame: u32) -> bool {
+        self.produced_frame
+            .load(std::sync::atomic::Ordering::Acquire)
+            == u64::from(frame)
+    }
+
+    /// Reset native history on the first evaluation or after an evaluation gap.
+    pub fn reset_needed(&self, frame: u32) -> bool {
+        self.evaluated_frame
+            .load(std::sync::atomic::Ordering::Acquire)
+            != u64::from(frame.wrapping_sub(1))
+    }
+
+    /// Record a successful native evaluation, never a skipped or failed call.
+    pub fn mark_evaluated(&self, frame: u32) {
+        self.evaluated_frame
+            .store(u64::from(frame), std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod guide_status_tests {
+    use super::DlssRayReconstructionGuideStatus;
+
+    #[test]
+    fn pending_current_stale_and_resume() {
+        let status = DlssRayReconstructionGuideStatus::default();
+        assert!(!status.is_ready(0));
+        assert!(!status.is_ready(u32::MAX));
+        assert!(status.reset_needed(0));
+        status.mark_ready(0);
+        assert!(status.is_ready(0));
+        assert!(status.reset_needed(0));
+        status.mark_evaluated(0);
+        assert!(!status.is_ready(1));
+        assert!(!status.reset_needed(1));
+        status.mark_ready(2);
+        assert!(!status.is_ready(0));
+        assert!(status.is_ready(2));
+        assert!(status.reset_needed(2));
+        status.mark_evaluated(2);
+        assert!(!status.reset_needed(3));
+    }
+
+    #[test]
+    fn frame_counter_wraps_without_colliding_with_sentinel() {
+        let status = DlssRayReconstructionGuideStatus::default();
+        assert!(status.reset_needed(u32::MAX));
+        status.mark_ready(u32::MAX);
+        assert!(status.is_ready(u32::MAX));
+        status.mark_evaluated(u32::MAX);
+        status.mark_ready(0);
+        assert!(status.is_ready(0));
+        assert!(!status.is_ready(u32::MAX));
+        assert!(!status.reset_needed(0));
     }
 }
 

@@ -197,6 +197,7 @@ impl Plugin for SolarikLightingPlugin {
             return;
         }
 
+        #[cfg(feature = "nrd")]
         let is_dx12 = render_app
             .world()
             .get_resource::<bevy_render::renderer::RenderAdapterInfo>()

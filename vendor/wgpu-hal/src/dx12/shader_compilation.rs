@@ -374,6 +374,8 @@ fn compile_dxc(
     profiling::scope!("compile_dxc");
 
     let source_name = source_name.and_then(|cstr| cstr.to_str().ok());
+    let diagnostic_name = source_name.unwrap_or("<unnamed>");
+    let diagnostic_entry = raw_ep;
 
     let source_name = source_name.map(OPCWSTR::new);
     let raw_ep = OPCWSTR::new(raw_ep);
@@ -424,9 +426,12 @@ fn compile_dxc(
         Encoding: Dxc::DXC_CP_UTF8.0,
     };
 
+    let compile_started = std::time::Instant::now();
+    log::info!(target: "solarik_dxc_timing", "DXC_COMPILE_BEGIN name={diagnostic_name} entry={diagnostic_entry} source_bytes={}", source.len());
     let compile_res: Dxc::IDxcResult =
         unsafe { compiler.Compile(&buffer, Some(&compile_args), None) }
             .into_device_result("Compile")?;
+    log::info!(target: "solarik_dxc_timing", "DXC_COMPILE_END name={diagnostic_name} entry={diagnostic_entry} elapsed_ms={:.3}", compile_started.elapsed().as_secs_f64() * 1000.0);
 
     drop(compile_args);
     drop(source_name);

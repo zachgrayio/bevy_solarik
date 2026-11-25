@@ -32,14 +32,36 @@ pub type SlResult = u32;
 pub const SL_RESULT_OK: SlResult = 0;
 
 pub type Feature = u32;
+pub const K_FEATURE_DLSS: Feature = 0;
 pub const K_FEATURE_REFLEX: Feature = 3;
 pub const K_FEATURE_PCL: Feature = 4;
 pub const K_FEATURE_DLSS_G: Feature = 1000;
+pub const K_FEATURE_DLSS_RR: Feature = 1001;
 
 pub type BufferType = u32;
 pub const K_BUFFER_TYPE_DEPTH: BufferType = 0;
 pub const K_BUFFER_TYPE_MOTION_VECTORS: BufferType = 1;
 pub const K_BUFFER_TYPE_HUD_LESS_COLOR: BufferType = 2;
+pub const K_BUFFER_TYPE_SCALING_INPUT_COLOR: BufferType = 3;
+pub const K_BUFFER_TYPE_SCALING_OUTPUT_COLOR: BufferType = 4;
+pub const K_BUFFER_TYPE_ALBEDO: BufferType = 7;
+pub const K_BUFFER_TYPE_SPECULAR_ALBEDO: BufferType = 8;
+pub const K_BUFFER_TYPE_SPECULAR_MOTION_VECTORS: BufferType = 10;
+pub const K_BUFFER_TYPE_EXPOSURE: BufferType = 13;
+pub const K_BUFFER_TYPE_NORMAL_ROUGHNESS: BufferType = 14;
+pub const K_BUFFER_TYPE_SPECULAR_HIT_DISTANCE: BufferType = 42;
+
+pub const RESOURCE_LIFECYCLE_VALID_UNTIL_EVALUATE: u32 = 2;
+
+pub const DLSS_MODE_OFF: u32 = 0;
+pub const DLSS_MODE_MAX_PERFORMANCE: u32 = 1;
+pub const DLSS_MODE_BALANCED: u32 = 2;
+pub const DLSS_MODE_MAX_QUALITY: u32 = 3;
+pub const DLSS_MODE_ULTRA_PERFORMANCE: u32 = 4;
+pub const DLSS_MODE_ULTRA_QUALITY: u32 = 5;
+pub const DLSS_MODE_DLAA: u32 = 6;
+
+pub const DLSSD_NORMAL_ROUGHNESS_PACKED: u32 = 1;
 
 pub const RENDER_API_D3D12: u32 = 1;
 pub const RENDER_API_VULKAN: u32 = 2;
@@ -121,6 +143,12 @@ pub const GUID_RESOURCE: StructType = StructType {
     data2: 0x2418,
     data3: 0x4b72,
     data4: [0x83, 0x91, 0x13, 0xf8, 0x72, 0x1c, 0x72, 0x61],
+};
+pub const GUID_SUBRESOURCE_RANGE: StructType = StructType {
+    data1: 0x8d4c_316c,
+    data2: 0xd402,
+    data3: 0x4524,
+    data4: [0x89, 0xa7, 0x14, 0xe7, 0x9e, 0x63, 0x8e, 0x3a],
 };
 pub const GUID_RESOURCE_TAG: StructType = StructType {
     data1: 0x4c6a_5aad,
@@ -224,6 +252,18 @@ pub struct Extent {
     pub left: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Vulkan view range chained to `Resource::base.next` (Streamline 2.14.16).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SubresourceRange {
+    pub base: BaseStructure,
+    pub aspect_mask: u32,
+    pub base_mip_level: u32,
+    pub level_count: u32,
+    pub base_array_layer: u32,
+    pub layer_count: u32,
 }
 
 #[repr(C)]
@@ -520,14 +560,211 @@ impl Default for VulkanInfo {
     }
 }
 
+pub const GUID_DLSS_OPTIONS: StructType = StructType {
+    data1: 0x6ac8_26e4,
+    data2: 0x4c61,
+    data3: 0x4101,
+    data4: [0xa9, 0x2d, 0x63, 0x8d, 0x42, 0x10, 0x57, 0xb8],
+};
+pub const GUID_DLSS_OPTIMAL_SETTINGS: StructType = StructType {
+    data1: 0xef1d_0957,
+    data2: 0xfd58,
+    data3: 0x4df7,
+    data4: [0xb5, 0x04, 0x8b, 0x69, 0xd8, 0xaa, 0x6b, 0x76],
+};
+pub const GUID_DLSSD_OPTIONS: StructType = StructType {
+    data1: 0x0ad8_7504,
+    data2: 0x774e,
+    data3: 0x4bf3,
+    data4: [0x96, 0x33, 0xa4, 0x4d, 0x1f, 0x7f, 0x9c, 0xb8],
+};
+pub const GUID_DLSSD_OPTIMAL_SETTINGS: StructType = StructType {
+    data1: 0xfbd0_c637,
+    data2: 0xa28f,
+    data3: 0x41f2,
+    data4: [0xbc, 0x91, 0xb4, 0x21, 0xfa, 0xee, 0x8e, 0x1e],
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DlssOptions {
+    pub base: BaseStructure,
+    pub mode: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub sharpness: f32,
+    pub pre_exposure: f32,
+    pub exposure_scale: f32,
+    pub color_buffers_hdr: u8,
+    pub indicator_invert_axis_x: u8,
+    pub indicator_invert_axis_y: u8,
+    pub dlaa_preset: u32,
+    pub quality_preset: u32,
+    pub balanced_preset: u32,
+    pub performance_preset: u32,
+    pub ultra_performance_preset: u32,
+    pub ultra_quality_preset: u32,
+    pub use_auto_exposure: u8,
+    pub alpha_upscaling_enabled: u8,
+}
+
+impl Default for DlssOptions {
+    fn default() -> Self {
+        Self {
+            base: BaseStructure::new(GUID_DLSS_OPTIONS, K_STRUCT_VERSION_3),
+            mode: DLSS_MODE_OFF,
+            output_width: u32::MAX,
+            output_height: u32::MAX,
+            sharpness: 0.0,
+            pre_exposure: 1.0,
+            exposure_scale: 1.0,
+            color_buffers_hdr: BOOLEAN_TRUE,
+            indicator_invert_axis_x: BOOLEAN_FALSE,
+            indicator_invert_axis_y: BOOLEAN_FALSE,
+            dlaa_preset: 0,
+            quality_preset: 0,
+            balanced_preset: 0,
+            performance_preset: 0,
+            ultra_performance_preset: 0,
+            ultra_quality_preset: 0,
+            use_auto_exposure: BOOLEAN_FALSE,
+            alpha_upscaling_enabled: BOOLEAN_FALSE,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DlssOptimalSettings {
+    pub base: BaseStructure,
+    pub optimal_render_width: u32,
+    pub optimal_render_height: u32,
+    pub optimal_sharpness: f32,
+    pub render_width_min: u32,
+    pub render_height_min: u32,
+    pub render_width_max: u32,
+    pub render_height_max: u32,
+}
+
+impl Default for DlssOptimalSettings {
+    fn default() -> Self {
+        Self {
+            base: BaseStructure::new(GUID_DLSS_OPTIMAL_SETTINGS, K_STRUCT_VERSION_1),
+            optimal_render_width: 0,
+            optimal_render_height: 0,
+            optimal_sharpness: 0.0,
+            render_width_min: 0,
+            render_height_min: 0,
+            render_width_max: 0,
+            render_height_max: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DlssDOptions {
+    pub base: BaseStructure,
+    pub mode: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub sharpness: f32,
+    pub pre_exposure: f32,
+    pub exposure_scale: f32,
+    pub color_buffers_hdr: u8,
+    pub indicator_invert_axis_x: u8,
+    pub indicator_invert_axis_y: u8,
+    pub normal_roughness_mode: u32,
+    pub world_to_camera_view: [[f32; 4]; 4],
+    pub camera_view_to_world: [[f32; 4]; 4],
+    pub alpha_upscaling_enabled: u8,
+    pub dlaa_preset: u32,
+    pub quality_preset: u32,
+    pub balanced_preset: u32,
+    pub performance_preset: u32,
+    pub ultra_performance_preset: u32,
+    pub ultra_quality_preset: u32,
+}
+
+impl Default for DlssDOptions {
+    fn default() -> Self {
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        Self {
+            base: BaseStructure::new(GUID_DLSSD_OPTIONS, K_STRUCT_VERSION_3),
+            mode: DLSS_MODE_OFF,
+            output_width: u32::MAX,
+            output_height: u32::MAX,
+            sharpness: 0.0,
+            pre_exposure: 1.0,
+            exposure_scale: 1.0,
+            color_buffers_hdr: BOOLEAN_TRUE,
+            indicator_invert_axis_x: BOOLEAN_FALSE,
+            indicator_invert_axis_y: BOOLEAN_FALSE,
+            normal_roughness_mode: DLSSD_NORMAL_ROUGHNESS_PACKED,
+            world_to_camera_view: identity,
+            camera_view_to_world: identity,
+            alpha_upscaling_enabled: BOOLEAN_FALSE,
+            dlaa_preset: 0,
+            quality_preset: 0,
+            balanced_preset: 0,
+            performance_preset: 0,
+            ultra_performance_preset: 0,
+            ultra_quality_preset: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DlssDOptimalSettings {
+    pub base: BaseStructure,
+    pub optimal_render_width: u32,
+    pub optimal_render_height: u32,
+    pub optimal_sharpness: f32,
+    pub render_width_min: u32,
+    pub render_height_min: u32,
+    pub render_width_max: u32,
+    pub render_height_max: u32,
+}
+
+impl Default for DlssDOptimalSettings {
+    fn default() -> Self {
+        Self {
+            base: BaseStructure::new(GUID_DLSSD_OPTIMAL_SETTINGS, K_STRUCT_VERSION_1),
+            optimal_render_width: 0,
+            optimal_render_height: 0,
+            optimal_sharpness: 0.0,
+            render_width_min: 0,
+            render_height_min: 0,
+            render_width_max: 0,
+            render_height_max: 0,
+        }
+    }
+}
+
 // Compile-time x86_64 MSVC/SysV layout assertions against Streamline 2.14.16 headers.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<StructType>() == 16);
     assert!(size_of::<BaseStructure>() == 32);
+    assert!(size_of::<DlssOptions>() == 88);
+    assert!(size_of::<DlssOptimalSettings>() == 64);
+    assert!(size_of::<DlssDOptions>() == 224);
+    assert!(size_of::<DlssDOptimalSettings>() == 64);
     assert!(size_of::<Preferences>() == 144);
     assert!(size_of::<ViewportHandle>() == 40);
     assert!(size_of::<AdapterInfo>() == 56);
+    assert!(size_of::<SubresourceRange>() == 56);
+    assert!(std::mem::offset_of!(SubresourceRange, aspect_mask) == 32);
+    assert!(std::mem::offset_of!(SubresourceRange, base_mip_level) == 36);
+    assert!(std::mem::offset_of!(SubresourceRange, level_count) == 40);
+    assert!(std::mem::offset_of!(SubresourceRange, base_array_layer) == 44);
+    assert!(std::mem::offset_of!(SubresourceRange, layer_count) == 48);
     assert!(size_of::<Resource>() == 112);
     assert!(size_of::<ResourceTag>() == 64);
     assert!(size_of::<DlssGOptions>() == 120);

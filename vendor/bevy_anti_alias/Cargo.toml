@@ -45,6 +45,7 @@ path = "../bevy_core_pipeline"
 [features]
 dlss = [
     "dep:dlss_wgpu",
+    "dep:solarik-streamline-wgpu",
     "dep:uuid",
     "bevy_render/raw_vulkan_init",
 ]
@@ -114,6 +115,10 @@ default-features = false
 
 [dependencies.uuid]
 version = "1.21.0"
+optional = true
+
+[dependencies.solarik-streamline-wgpu]
+path = "../../crates/streamline-wgpu"
 optional = true
 
 [lints.clippy]

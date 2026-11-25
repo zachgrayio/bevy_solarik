@@ -49,6 +49,13 @@ pub struct VulkanSwapchainInterceptor {
     pub queue_present: Option<vk::PFN_vkQueuePresentKHR>,
     pub on_present_start: Option<fn()>,
     pub on_present_end: Option<fn()>,
+    /// Reports whether the real API Present succeeded (including SUBOPTIMAL).
+    pub on_present_result: Option<fn(bool)>,
+    /// Reports the immutable configuration used by this API Present.
+    pub on_present_stamp: Option<fn(crate::surface_stamp::SurfaceStamp, bool)>,
+    /// Reports a successfully committed native configuration.
+    pub on_surface_configured: Option<fn(crate::surface_stamp::SurfaceStamp)>,
+    pub on_before_swapchain_recreate: Option<fn()>,
 }
 
 static VULKAN_SWAPCHAIN_INTERCEPTOR: RwLock<VulkanSwapchainInterceptor> =
@@ -60,6 +67,10 @@ static VULKAN_SWAPCHAIN_INTERCEPTOR: RwLock<VulkanSwapchainInterceptor> =
         queue_present: None,
         on_present_start: None,
         on_present_end: None,
+        on_present_result: None,
+        on_present_stamp: None,
+        on_surface_configured: None,
+        on_before_swapchain_recreate: None,
     });
 
 /// Register Vulkan swapchain/present interception hooks (e.g. Streamline or FSR FG).
@@ -67,11 +78,71 @@ pub fn set_swapchain_interceptor(interceptor: VulkanSwapchainInterceptor) {
     *VULKAN_SWAPCHAIN_INTERCEPTOR.write() = interceptor;
 }
 
+/// Additively register hooks, filling only the fields set in `patch` and keeping
+/// any already-registered proxies. Two providers can coexist on one device
+/// (Streamline owns present markers + DLSS-G resize handling, AMD FFX owns the
+/// swapchain/present proxies); replacing the whole struct made whichever crate
+/// installed last silently disable the other.
+pub fn merge_swapchain_interceptor(patch: VulkanSwapchainInterceptor) {
+    let mut current = VULKAN_SWAPCHAIN_INTERCEPTOR.write();
+    if patch.create_swapchain.is_some() {
+        current.create_swapchain = patch.create_swapchain;
+    }
+    if patch.destroy_swapchain.is_some() {
+        current.destroy_swapchain = patch.destroy_swapchain;
+    }
+    if patch.get_swapchain_images.is_some() {
+        current.get_swapchain_images = patch.get_swapchain_images;
+    }
+    if patch.acquire_next_image.is_some() {
+        current.acquire_next_image = patch.acquire_next_image;
+    }
+    if patch.queue_present.is_some() {
+        current.queue_present = patch.queue_present;
+    }
+    if patch.on_present_start.is_some() {
+        current.on_present_start = patch.on_present_start;
+    }
+    if patch.on_present_end.is_some() {
+        current.on_present_end = patch.on_present_end;
+    }
+    if patch.on_present_result.is_some() {
+        current.on_present_result = patch.on_present_result;
+    }
+    if patch.on_present_stamp.is_some() {
+        current.on_present_stamp = patch.on_present_stamp;
+    }
+    if patch.on_surface_configured.is_some() {
+        current.on_surface_configured = patch.on_surface_configured;
+    }
+    if patch.on_before_swapchain_recreate.is_some() {
+        current.on_before_swapchain_recreate = patch.on_before_swapchain_recreate;
+    }
+}
+
 pub(crate) fn swapchain_interceptor() -> VulkanSwapchainInterceptor {
     *VULKAN_SWAPCHAIN_INTERCEPTOR.read()
 }
 
-use alloc::{boxed::Box, ffi::CString, sync::Arc, vec::Vec};
+/// Optional override for the library that supplies the Vulkan entry points
+/// (`vkGetInstanceProcAddr`). A frame-generation interposer (NVIDIA Streamline)
+/// must create the `VkInstance`/`VkDevice` itself before its swapchain proxy
+/// functions will accept the application's `VkSurfaceKHR`. Backend-neutral:
+/// `wgpu-hal` carries no vendor dependency and only learns a library name.
+static VULKAN_ENTRY_LIBRARY: RwLock<Option<String>> = RwLock::new(None);
+
+/// Route Vulkan entry-point loading through `library` instead of the system
+/// Vulkan loader. Must be called before the first `Instance::init`; `None`
+/// restores the default loader.
+pub fn set_vulkan_entry_library(library: Option<&str>) {
+    *VULKAN_ENTRY_LIBRARY.write() = library.map(String::from);
+}
+
+pub(crate) fn vulkan_entry_library() -> Option<String> {
+    VULKAN_ENTRY_LIBRARY.read().clone()
+}
+
+use alloc::{boxed::Box, ffi::CString, string::String, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, ffi::CStr, fmt, marker::PhantomData, mem, num::NonZeroU32};
 
 use arrayvec::ArrayVec;
@@ -250,11 +321,30 @@ pub struct Instance {
 
 #[expect(missing_debug_implementations, reason = "TODO?")]
 pub struct Surface {
+    stamp_source: crate::surface_stamp::SurfaceStampSource,
     swapchain: RwLock<Option<Box<dyn swapchain::Swapchain>>>,
     inner: Box<dyn swapchain::Surface>,
 }
 
 impl Surface {
+    /// Associate the next native configuration with an application request.
+    pub fn request_reconfigure_epoch(&self, epoch: u64) {
+        self.stamp_source.request(epoch);
+    }
+
+    /// Identity of this surface, independent of native handle reuse.
+    pub fn presentation_surface_id(&self) -> u64 {
+        self.stamp_source.surface_id()
+    }
+
+    /// Last successfully configured native surface stamp.
+    pub fn presentation_stamp(&self) -> Option<crate::surface_stamp::SurfaceStamp> {
+        self.swapchain
+            .read()
+            .as_ref()
+            .map(|swapchain| swapchain.presentation_stamp())
+    }
+
     /// Returns the raw Vulkan surface handle.
     ///
     /// Returns `None` if the surface is a DXGI surface.
@@ -886,6 +976,7 @@ pub struct TextureView {
     _layers: NonZeroU32,
     format: wgt::TextureFormat,
     raw_format: vk::Format,
+    subresource_range: vk::ImageSubresourceRange,
     base_mip_level: u32,
     dimension: wgt::TextureViewDimension,
     texture_identity: ResourceIdentity<vk::Image>,
@@ -895,6 +986,16 @@ pub struct TextureView {
 impl crate::DynTextureView for TextureView {}
 
 impl TextureView {
+    /// Returns the actual native format used to create this image view.
+    pub fn raw_format(&self) -> vk::Format {
+        self.raw_format
+    }
+
+    /// Returns the exact native subresource range used to create this image view.
+    pub fn raw_subresource_range(&self) -> vk::ImageSubresourceRange {
+        self.subresource_range
+    }
+
     /// # Safety
     ///
     /// - The image view handle must not be manually destroyed
