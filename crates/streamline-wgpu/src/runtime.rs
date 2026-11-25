@@ -144,6 +144,8 @@ pub struct Streamline {
     last_num_frames: u32,
     last_dlssg_opts: DlssGOptions,
     resize_cooldown_frames: u32,
+    last_recorded_frame: Option<u32>,
+    last_recorded_state: FrameGenState,
     is_dx12: bool,
     native_shutdown: bool,
     // Keep wide-string paths / project id alive for slInit lifetime.
@@ -587,6 +589,8 @@ pub fn attach_device(
         last_num_frames: 0,
         last_dlssg_opts: DlssGOptions::default(),
         resize_cooldown_frames: 0,
+        last_recorded_frame: None,
+        last_recorded_state: FrameGenState::default(),
         is_dx12,
         native_shutdown: false,
         _plugin_dir_wide: plugin_dir_wide,
@@ -1114,21 +1118,35 @@ pub fn record_frame(
     let mut guard = global_slot().lock().unwrap();
     let sl = guard.as_mut().ok_or(Error::NotInitialized)?;
 
+    // The caller runs this per extracted view. Streamline allows one
+    // `slDLSSGSetOptions` / `slReflexSleep` / tag set per frame token: repeating
+    // them logs "Repeated slDLSSGSetOptions() call for the frame N" and makes
+    // every extra view spin again inside `slReflexSleep`, collapsing the frame
+    // rate. Record only for the first view of a frame and reuse its state.
+    if sl.last_recorded_frame == Some(frame_index) {
+        return Ok(sl.last_recorded_state);
+    }
+    sl.last_recorded_frame = Some(frame_index);
+
     if sl.resize_cooldown_frames > 0 {
         sl.resize_cooldown_frames -= 1;
-        return Ok(FrameGenState {
+        let state = FrameGenState {
             max_generated_frames: sl.capabilities.max_generated_frames,
             num_frames_actually_presented: 1,
             ..Default::default()
-        });
+        };
+        sl.last_recorded_state = state;
+        return Ok(state);
     }
 
     let enabled = num_frames_to_generate > 0 && sl.capabilities.dlss_g_supported;
     if !enabled && sl.last_mode == DLSSG_MODE_OFF {
-        return Ok(FrameGenState {
+        let state = FrameGenState {
             max_generated_frames: sl.capabilities.max_generated_frames,
             ..Default::default()
-        });
+        };
+        sl.last_recorded_state = state;
+        return Ok(state);
     }
 
     let mut token: *mut BaseStructure = ptr::null_mut();
@@ -1296,6 +1314,7 @@ pub fn record_frame(
         }
     }
 
+    sl.last_recorded_state = out_state;
     Ok(out_state)
 }
 
