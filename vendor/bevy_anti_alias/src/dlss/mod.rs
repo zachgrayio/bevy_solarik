@@ -172,9 +172,12 @@ impl Plugin for DlssPlugin {
         let project_id = app.world().get_resource::<DlssProjectId>()
             .expect("The `dlss` feature is enabled, but DlssProjectId was not added to the App before DlssPlugin.");
         let dlss_sdk = dlss_wgpu::DlssSdk::new(project_id.0, wgpu_device);
-        let Ok(dlss_sdk) = dlss_sdk else {
-            info!("DLSS is not supported on this system");
-            return;
+        let dlss_sdk = match dlss_sdk {
+            Ok(sdk) => sdk,
+            Err(err) => {
+                info!(?err, "DLSS is not supported on this system");
+                return;
+            }
         };
 
         if let Some(owners) = app.world().get_resource::<DlssRuntimeKeepalives>() {

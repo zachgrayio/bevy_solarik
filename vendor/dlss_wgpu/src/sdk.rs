@@ -54,7 +54,7 @@ impl DlssSdk {
                 let shared_instance = hal_device.shared_instance();
                 let raw_instance = shared_instance.raw_instance();
 
-                with_feature_info(project_id, Default::default(), |feature_info| {
+                let init_res = with_feature_info(project_id, Default::default(), |feature_info| {
                     check_ngx_result(NVSDK_NGX_VULKAN_Init_with_ProjectID(
                         feature_info.Identifier.v.ProjectDesc.ProjectId,
                         NVSDK_NGX_EngineType_NVSDK_NGX_ENGINE_TYPE_CUSTOM,
@@ -68,7 +68,36 @@ impl DlssSdk {
                         feature_info.FeatureInfo,
                         NVSDK_NGX_Version_NVSDK_NGX_Version_API,
                     ))
-                })?;
+                });
+                if let Err(first_err) = init_res {
+                    // When Streamline owns `ash::Entry`, `sl.interposer.dll`'s
+                    // `vkGetInstanceProcAddr` may reject NGX init; retry with the
+                    // real Vulkan loader entry (handles are real Vulkan objects).
+                    let real_entry = ash::Entry::load().map_err(|_| first_err)?;
+                    let real_gipa = real_entry.static_fn().get_instance_proc_addr;
+                    let real_gdpa = real_entry
+                        .get_instance_proc_addr(
+                            raw_instance.handle(),
+                            c"vkGetDeviceProcAddr".as_ptr(),
+                        )
+                        .map(|p| std::mem::transmute(p))
+                        .unwrap_or(raw_instance.fp_v1_0().get_device_proc_addr);
+                    with_feature_info(project_id, Default::default(), |feature_info| {
+                        check_ngx_result(NVSDK_NGX_VULKAN_Init_with_ProjectID(
+                            feature_info.Identifier.v.ProjectDesc.ProjectId,
+                            NVSDK_NGX_EngineType_NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+                            feature_info.Identifier.v.ProjectDesc.EngineVersion,
+                            feature_info.ApplicationDataPath,
+                            raw_instance.handle(),
+                            hal_device.raw_physical_device(),
+                            hal_device.raw_device().handle(),
+                            real_gipa,
+                            real_gdpa,
+                            feature_info.FeatureInfo,
+                            NVSDK_NGX_Version_NVSDK_NGX_Version_API,
+                        ))
+                    })?;
+                }
 
                 check_ngx_result(NVSDK_NGX_VULKAN_GetCapabilityParameters(&mut parameters))?;
 
