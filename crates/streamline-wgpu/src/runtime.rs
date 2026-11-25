@@ -312,10 +312,15 @@ fn init_streamline(
     project_id_c: &CString,
     plugin_dir_wide: &[u16],
     is_dx12: bool,
+    use_interposer_proxies: bool,
 ) -> Result<(), Error> {
     let plugin_paths = [plugin_dir_wide.as_ptr()];
     let features_to_load = [K_FEATURE_PCL, K_FEATURE_REFLEX, K_FEATURE_DLSS_G];
     let engine_ver = c"1.0.0";
+    let mut flags = PREF_DISABLE_CL_STATE_TRACKING | PREF_USE_FRAME_BASED_RESOURCE_TAGGING;
+    if !use_interposer_proxies {
+        flags |= PREF_USE_MANUAL_HOOKING;
+    }
     let prefs = Preferences {
         base: BaseStructure::new(GUID_PREFERENCES, K_STRUCT_VERSION_1),
         show_console: false,
@@ -326,9 +331,7 @@ fn init_streamline(
         allocate_callback: ptr::null(),
         release_callback: ptr::null(),
         log_message_callback: ptr::null(),
-        flags: PREF_DISABLE_CL_STATE_TRACKING
-            | PREF_USE_MANUAL_HOOKING
-            | PREF_USE_FRAME_BASED_RESOURCE_TAGGING,
+        flags,
         features_to_load: features_to_load.as_ptr(),
         num_features_to_load: features_to_load.len() as u32,
         application_id: 0,
@@ -365,7 +368,7 @@ pub fn preinit(project_id_uuid: &str, is_dx12: bool) -> Result<(), Error> {
     let (core, plugin_dir) = load_core()?;
     let plugin_dir_wide = to_wide_nul(&plugin_dir);
     let project_id_c = CString::new(project_id_uuid).unwrap_or_else(|_| CString::new("").unwrap());
-    init_streamline(&core, &project_id_c, &plugin_dir_wide, is_dx12)?;
+    init_streamline(&core, &project_id_c, &plugin_dir_wide, is_dx12, !is_dx12)?;
     if !is_dx12 {
         let entry_library = plugin_dir.join("sl.interposer.dll");
         let entry_library = entry_library.to_string_lossy().into_owned();
@@ -414,7 +417,7 @@ pub fn attach_device(
             let plugin_dir_wide = to_wide_nul(&plugin_dir);
             let project_id_c =
                 CString::new(project_id_uuid).unwrap_or_else(|_| CString::new("").unwrap());
-            init_streamline(&core, &project_id_c, &plugin_dir_wide, is_dx12)?;
+            init_streamline(&core, &project_id_c, &plugin_dir_wide, is_dx12, false)?;
             (core, plugin_dir_wide, project_id_c)
         }
     };
@@ -438,21 +441,27 @@ pub fn attach_device(
             .ok_or(Error::UnsupportedBackend)?;
         let phys = hal.raw_physical_device().as_raw() as usize as *mut c_void;
         adapter_info.vk_physical_device = phys;
-        let vk_info = VulkanInfo {
-            device: hal.raw_device().handle().as_raw() as usize as *mut c_void,
-            instance: hal.shared_instance().raw_instance().handle().as_raw() as usize
-                as *mut c_void,
-            physical_device: phys,
-            graphics_queue_family: hal.queue_family_index(),
-            compute_queue_family: hal.queue_family_index(),
-            ..VulkanInfo::default()
-        };
-        let set_res = unsafe { (core.sl_set_vulkan_info)(&vk_info) };
-        if set_res != SL_RESULT_OK {
-            unsafe {
-                let _ = (core.sl_shutdown)();
+        // Streamline `sl_helpers_vk.h`: "IMPORTANT: Only call slSetVulkanInfo if
+        // NOT using vkCreateDevice and vkCreateInstance proxies provided by SL."
+        // Calling it when interposed via `sl.interposer.dll` returns
+        // `eErrorInvalidIntegration` (19).
+        if !VULKAN_INTERPOSED.load(Ordering::Acquire) {
+            let vk_info = VulkanInfo {
+                device: hal.raw_device().handle().as_raw() as usize as *mut c_void,
+                instance: hal.shared_instance().raw_instance().handle().as_raw() as usize
+                    as *mut c_void,
+                physical_device: phys,
+                graphics_queue_family: hal.queue_family_index(),
+                compute_queue_family: hal.queue_family_index(),
+                ..VulkanInfo::default()
+            };
+            let set_res = unsafe { (core.sl_set_vulkan_info)(&vk_info) };
+            if set_res != SL_RESULT_OK {
+                unsafe {
+                    let _ = (core.sl_shutdown)();
+                }
+                return Err(Error::Api("slSetVulkanInfo", set_res));
             }
-            return Err(Error::Api("slSetVulkanInfo", set_res));
         }
     }
 
@@ -589,29 +598,11 @@ pub fn install_swapchain_interception() {
             });
             tracing::info!("Streamline DX12 swapchain/present interception hooks installed");
         }
-    } else if VULKAN_INTERPOSED.load(Ordering::Acquire)
-        && sl.core.vk_create_swapchain.is_some()
-        && sl.core.vk_queue_present.is_some()
-    {
-        // `preinit` routed entry loading through the interposer, so it created
-        // the VkInstance/VkDevice and can accept this surface: let it own
-        // swapchain creation and present so DLSS-G can present interpolated frames.
-        wgpu::hal::vulkan::set_swapchain_interceptor(
-            wgpu::hal::vulkan::VulkanSwapchainInterceptor {
-                create_swapchain: sl.core.vk_create_swapchain,
-                destroy_swapchain: sl.core.vk_destroy_swapchain,
-                get_swapchain_images: sl.core.vk_get_swapchain_images,
-                acquire_next_image: sl.core.vk_acquire_next_image,
-                queue_present: sl.core.vk_queue_present,
-                on_present_start: Some(on_present_start),
-                on_present_end: Some(on_present_end),
-            },
-        );
-        tracing::info!("Streamline Vulkan swapchain/present interception hooks installed");
     } else {
-        // Without the interposer owning instance creation its swapchain proxies
-        // reject the surface (`Invalid surface`), so keep the real
-        // `VK_KHR_swapchain` functions and only emit present markers.
+        // When `preinit` routed `ash::Entry` through `sl.interposer.dll`,
+        // `ash::khr::swapchain::Device` already holds the interposer's own
+        // `vkCreateSwapchainKHR`/`vkQueuePresentKHR` proxies — do not double-wrap.
+        // Attach only the present markers (PCL/Reflex).
         wgpu::hal::vulkan::set_swapchain_interceptor(
             wgpu::hal::vulkan::VulkanSwapchainInterceptor {
                 create_swapchain: None,
