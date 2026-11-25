@@ -589,6 +589,7 @@ pub fn install_presentation(
                 queue_present: Some(vk_queue_present),
                 on_present_start: None,
                 on_present_end: None,
+                on_before_swapchain_recreate: None,
             },
         );
         return Ok(PresentationBackend::Vulkan);

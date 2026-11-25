@@ -49,6 +49,7 @@ pub struct VulkanSwapchainInterceptor {
     pub queue_present: Option<vk::PFN_vkQueuePresentKHR>,
     pub on_present_start: Option<fn()>,
     pub on_present_end: Option<fn()>,
+    pub on_before_swapchain_recreate: Option<fn()>,
 }
 
 static VULKAN_SWAPCHAIN_INTERCEPTOR: RwLock<VulkanSwapchainInterceptor> =
@@ -60,6 +61,7 @@ static VULKAN_SWAPCHAIN_INTERCEPTOR: RwLock<VulkanSwapchainInterceptor> =
         queue_present: None,
         on_present_start: None,
         on_present_end: None,
+        on_before_swapchain_recreate: None,
     });
 
 /// Register Vulkan swapchain/present interception hooks (e.g. Streamline or FSR FG).

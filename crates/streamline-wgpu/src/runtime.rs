@@ -662,6 +662,7 @@ pub fn install_swapchain_interception() {
                 queue_present: None,
                 on_present_start: Some(on_present_start),
                 on_present_end: Some(on_present_end),
+                on_before_swapchain_recreate: Some(on_before_swapchain_recreate),
             },
         );
         tracing::info!("Streamline Vulkan present-marker hooks installed");
@@ -683,6 +684,27 @@ unsafe fn dx12_upgrade_swapchain(raw_swapchain: *mut c_void) -> Option<*mut c_vo
             "slUpgradeInterface for IDXGISwapChain3 returned non-OK"
         );
         None
+    }
+}
+
+fn on_before_swapchain_recreate() {
+    if let Ok(mut guard) = global_slot().lock()
+        && let Some(sl) = guard.as_mut()
+        && sl.last_mode == DLSSG_MODE_ON
+        && let Some(set_opts) = sl.features.dlss_g_set_options
+    {
+        let viewport = ViewportHandle::new(0);
+        let off = DlssGOptions {
+            mode: DLSSG_MODE_OFF,
+            ..DlssGOptions::default()
+        };
+        unsafe {
+            let _ = set_opts(&viewport, &off);
+        }
+        sl.last_mode = DLSSG_MODE_OFF;
+        sl.last_num_frames = 0;
+        sl.last_dlssg_opts = off;
+        tracing::info!("Streamline DLSS-G paused for Vulkan swapchain resize");
     }
 }
 
