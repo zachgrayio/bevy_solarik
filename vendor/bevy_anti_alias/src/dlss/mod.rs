@@ -173,11 +173,23 @@ impl Plugin for DlssPlugin {
         let project_id = app.world().get_resource::<DlssProjectId>()
             .expect("The `dlss` feature is enabled, but DlssProjectId was not added to the App before DlssPlugin.");
 
-        // On interposed Windows Vulkan (when `sl.interposer.dll` owns the
-        // `VkDevice` for DLSS-G), drive DLSS SR and RR through Streamline
-        // (`sl.dlss.dll` / `sl.dlss_d.dll`) instead of direct NGX (`dlss_wgpu`),
-        // avoiding NVIDIA's dual-NGX-init conflict on the same `VkDevice`.
-        if is_vulkan && solarik_streamline_wgpu::is_vulkan_interposed() {
+        // Drive DLSS SR and RR through Streamline (`sl.dlss.dll` / `sl.dlss_d.dll`)
+        // instead of direct NGX (`dlss_wgpu`) whenever Streamline owns the device
+        // for DLSS-G: on interposed Windows Vulkan it created the `VkDevice`, and
+        // on Windows DX12 it upgraded the swapchain via `slUpgradeInterface`.
+        // Running both providers against one device lets each `slEvaluateFeature`
+        // and each `dlss_wgpu` render serialize on NVIDIA's NGX lock (measured
+        // 2-7 FPS on DX12 versus ~110 FPS with Streamline alone), so exactly one
+        // provider owns super resolution and ray reconstruction per device.
+        let streamline_owns_device = if is_vulkan {
+            solarik_streamline_wgpu::is_vulkan_interposed()
+        } else {
+            solarik_streamline_wgpu::is_ready() || {
+                let stream_project_id = project_id.0.to_string();
+                solarik_streamline_wgpu::attach_device(&stream_project_id, &wgpu_device).is_ok()
+            }
+        };
+        if streamline_owns_device {
             let project_id_str = project_id.0.to_string();
             match solarik_streamline_wgpu::attach_device(&project_id_str, &wgpu_device) {
                 Ok(caps) if caps.dlss_sr_supported || caps.dlss_rr_supported => {
