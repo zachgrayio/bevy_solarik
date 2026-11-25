@@ -446,6 +446,12 @@ pub(crate) struct NativeSwapchain {
 impl Drop for NativeSwapchain {
     fn drop(&mut self) {
         let interceptor = crate::vulkan::swapchain_interceptor();
+        if let Some(before_recreate) = interceptor.on_before_swapchain_recreate {
+            before_recreate();
+        }
+        if crate::vulkan::vulkan_entry_library().is_some() {
+            let _ = unsafe { self.device.raw.device_wait_idle() };
+        }
         unsafe {
             if let Some(destroy_fn) = interceptor.destroy_swapchain {
                 destroy_fn(self.device.raw.handle(), self.raw, core::ptr::null());
