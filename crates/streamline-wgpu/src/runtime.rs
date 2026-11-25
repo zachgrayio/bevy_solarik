@@ -6,7 +6,10 @@ use std::{
     ffi::{CString, c_char, c_void},
     path::PathBuf,
     ptr,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// Errors returned while loading or driving Streamline.
@@ -95,6 +98,11 @@ struct CoreExports {
     sl_set_vulkan_info: FnSlSetVulkanInfo,
     #[cfg(windows)]
     sl_upgrade_interface: FnSlUpgradeInterface,
+    vk_create_swapchain: Option<ash::vk::PFN_vkCreateSwapchainKHR>,
+    vk_destroy_swapchain: Option<ash::vk::PFN_vkDestroySwapchainKHR>,
+    vk_get_swapchain_images: Option<ash::vk::PFN_vkGetSwapchainImagesKHR>,
+    vk_acquire_next_image: Option<ash::vk::PFN_vkAcquireNextImageKHR>,
+    vk_queue_present: Option<ash::vk::PFN_vkQueuePresentKHR>,
 }
 
 struct FeatureExports {
@@ -222,6 +230,36 @@ fn load_core() -> Result<(CoreExports, PathBuf), Error> {
             sl_set_vulkan_info: load_sym!(library, "slSetVulkanInfo\0", FnSlSetVulkanInfo),
             #[cfg(windows)]
             sl_upgrade_interface: load_sym!(library, "slUpgradeInterface\0", FnSlUpgradeInterface),
+            vk_create_swapchain: unsafe {
+                library
+                    .get::<ash::vk::PFN_vkCreateSwapchainKHR>(b"vkCreateSwapchainKHR\0")
+                    .ok()
+                    .map(|symbol| *symbol)
+            },
+            vk_destroy_swapchain: unsafe {
+                library
+                    .get::<ash::vk::PFN_vkDestroySwapchainKHR>(b"vkDestroySwapchainKHR\0")
+                    .ok()
+                    .map(|symbol| *symbol)
+            },
+            vk_get_swapchain_images: unsafe {
+                library
+                    .get::<ash::vk::PFN_vkGetSwapchainImagesKHR>(b"vkGetSwapchainImagesKHR\0")
+                    .ok()
+                    .map(|symbol| *symbol)
+            },
+            vk_acquire_next_image: unsafe {
+                library
+                    .get::<ash::vk::PFN_vkAcquireNextImageKHR>(b"vkAcquireNextImageKHR\0")
+                    .ok()
+                    .map(|symbol| *symbol)
+            },
+            vk_queue_present: unsafe {
+                library
+                    .get::<ash::vk::PFN_vkQueuePresentKHR>(b"vkQueuePresentKHR\0")
+                    .ok()
+                    .map(|symbol| *symbol)
+            },
             _library: library,
         };
         tracing::info!(
@@ -249,37 +287,35 @@ unsafe fn query_feature_fn<T: Copy>(
     }
 }
 
-/// Initialize Streamline early (before swapchain creation) and attach to the
-/// live wgpu device (DX12 or Vulkan).
-///
-/// Safe on all hardware: on non-NVIDIA GPUs or when `sl.interposer.dll` is
-/// absent, logs and returns `Err` without installing any swapchain hook.
-pub fn attach_device(
-    project_id_uuid: &str,
-    device: &wgpu::Device,
-) -> Result<FrameGenCapabilities, Error> {
-    let is_dx12 = {
-        #[cfg(windows)]
-        {
-            unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.is_some()
-        }
-        #[cfg(not(windows))]
-        {
-            false
-        }
-    };
-    let is_vulkan = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some();
-    if !is_dx12 && !is_vulkan {
-        return Err(Error::UnsupportedBackend);
-    }
+/// A `slInit` performed before the wgpu instance existed, kept alive so
+/// [`attach_device`] can attach the device it eventually produced.
+struct PreInit {
+    core: CoreExports,
+    plugin_dir_wide: Vec<u16>,
+    project_id_c: CString,
+    is_dx12: bool,
+}
 
-    let (core, plugin_dir) = load_core()?;
-    let plugin_dir_wide = to_wide_nul(&plugin_dir);
+static PRE_INIT: OnceLock<Mutex<Option<PreInit>>> = OnceLock::new();
+
+/// Whether [`preinit`] routed Vulkan entry points through the interposer, so its
+/// swapchain proxies can own present for DLSS-G.
+static VULKAN_INTERPOSED: AtomicBool = AtomicBool::new(false);
+
+fn pre_init_slot() -> &'static Mutex<Option<PreInit>> {
+    PRE_INIT.get_or_init(|| Mutex::new(None))
+}
+
+/// Issue `slInit` with the preferences this crate always uses.
+fn init_streamline(
+    core: &CoreExports,
+    project_id_c: &CString,
+    plugin_dir_wide: &[u16],
+    is_dx12: bool,
+) -> Result<(), Error> {
     let plugin_paths = [plugin_dir_wide.as_ptr()];
     let features_to_load = [K_FEATURE_PCL, K_FEATURE_REFLEX, K_FEATURE_DLSS_G];
-    let project_id_c = CString::new(project_id_uuid).unwrap_or_else(|_| CString::new("").unwrap());
     let engine_ver = c"1.0.0";
-
     let prefs = Preferences {
         base: BaseStructure::new(GUID_PREFERENCES, K_STRUCT_VERSION_1),
         show_console: false,
@@ -305,11 +341,83 @@ pub fn attach_device(
             RENDER_API_VULKAN
         },
     };
-
     let init_res = unsafe { (core.sl_init)(&prefs, K_SDK_VERSION) };
     if init_res != SL_RESULT_OK {
         return Err(Error::Api("slInit", init_res));
     }
+    Ok(())
+}
+
+/// Initialize Streamline **before** the wgpu instance is created.
+///
+/// DLSS-G on Vulkan has no "bring your own swapchain" entry point: Streamline's
+/// `vkCreateSwapchainKHR`/`vkQueuePresentKHR` proxies must own present, and they
+/// only accept a `VkSurfaceKHR` whose `VkInstance` the interposer itself created.
+/// Routing `wgpu-hal`'s entry loading through `sl.interposer.dll` is what makes
+/// that true, so this must run before `RenderPlugin` builds the device.
+///
+/// Returns `Err` (leaving the graph on the plain Vulkan loader) when the
+/// interposer is absent, so this is safe on every machine.
+pub fn preinit(project_id_uuid: &str, is_dx12: bool) -> Result<(), Error> {
+    if pre_init_slot().lock().unwrap().is_some() {
+        return Ok(());
+    }
+    let (core, plugin_dir) = load_core()?;
+    let plugin_dir_wide = to_wide_nul(&plugin_dir);
+    let project_id_c = CString::new(project_id_uuid).unwrap_or_else(|_| CString::new("").unwrap());
+    init_streamline(&core, &project_id_c, &plugin_dir_wide, is_dx12)?;
+    if !is_dx12 {
+        let entry_library = plugin_dir.join("sl.interposer.dll");
+        let entry_library = entry_library.to_string_lossy().into_owned();
+        wgpu::hal::vulkan::set_vulkan_entry_library(Some(entry_library.as_str()));
+        VULKAN_INTERPOSED.store(true, Ordering::Release);
+        tracing::info!(entry_library, "Streamline owns Vulkan entry points");
+    }
+    *pre_init_slot().lock().unwrap() = Some(PreInit {
+        core,
+        plugin_dir_wide,
+        project_id_c,
+        is_dx12,
+    });
+    Ok(())
+}
+
+/// Initialize Streamline early (before swapchain creation) and attach to the
+/// live wgpu device (DX12 or Vulkan).
+///
+/// Safe on all hardware: on non-NVIDIA GPUs or when `sl.interposer.dll` is
+/// absent, logs and returns `Err` without installing any swapchain hook.
+pub fn attach_device(
+    project_id_uuid: &str,
+    device: &wgpu::Device,
+) -> Result<FrameGenCapabilities, Error> {
+    let is_dx12 = {
+        #[cfg(windows)]
+        {
+            unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.is_some()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    };
+    let is_vulkan = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some();
+    if !is_dx12 && !is_vulkan {
+        return Err(Error::UnsupportedBackend);
+    }
+
+    let pre = pre_init_slot().lock().unwrap().take();
+    let (core, plugin_dir_wide, project_id_c) = match pre {
+        Some(pre) if pre.is_dx12 == is_dx12 => (pre.core, pre.plugin_dir_wide, pre.project_id_c),
+        _ => {
+            let (core, plugin_dir) = load_core()?;
+            let plugin_dir_wide = to_wide_nul(&plugin_dir);
+            let project_id_c =
+                CString::new(project_id_uuid).unwrap_or_else(|_| CString::new("").unwrap());
+            init_streamline(&core, &project_id_c, &plugin_dir_wide, is_dx12)?;
+            (core, plugin_dir_wide, project_id_c)
+        }
+    };
 
     let mut adapter_info = AdapterInfo::default();
     if is_dx12 {
@@ -377,12 +485,13 @@ pub fn attach_device(
         }
     }
 
-    // On Vulkan, wgpu-hal creates VkInstance/VkDevice directly rather than
-    // through sl.interposer.dll's Vulkan loader proxy, so Vulkan swapchain
-    // interception is intentionally disabled. Only report DLSS-G / MFG as
-    // supported on DX12 where `slUpgradeInterface` upgrades `IDXGISwapChain3`.
+    // With `preinit` the interposer created the VkInstance/VkDevice, so its
+    // swapchain proxies accept the surface and can own present. Without it the
+    // interposer never saw the surface and `vkCreateSwapchainKHR` fails, so
+    // Vulkan stays present-markers-only.
+    let interposed = is_dx12 || VULKAN_INTERPOSED.load(Ordering::Acquire);
     let dlss_g_supported =
-        is_dx12 && dlss_g_res == SL_RESULT_OK && features.dlss_g_set_options.is_some();
+        interposed && dlss_g_res == SL_RESULT_OK && features.dlss_g_set_options.is_some();
     let effective_max_gen = if dlss_g_supported {
         max_generated_frames
     } else {
@@ -480,12 +589,29 @@ pub fn install_swapchain_interception() {
             });
             tracing::info!("Streamline DX12 swapchain/present interception hooks installed");
         }
+    } else if VULKAN_INTERPOSED.load(Ordering::Acquire)
+        && sl.core.vk_create_swapchain.is_some()
+        && sl.core.vk_queue_present.is_some()
+    {
+        // `preinit` routed entry loading through the interposer, so it created
+        // the VkInstance/VkDevice and can accept this surface: let it own
+        // swapchain creation and present so DLSS-G can present interpolated frames.
+        wgpu::hal::vulkan::set_swapchain_interceptor(
+            wgpu::hal::vulkan::VulkanSwapchainInterceptor {
+                create_swapchain: sl.core.vk_create_swapchain,
+                destroy_swapchain: sl.core.vk_destroy_swapchain,
+                get_swapchain_images: sl.core.vk_get_swapchain_images,
+                acquire_next_image: sl.core.vk_acquire_next_image,
+                queue_present: sl.core.vk_queue_present,
+                on_present_start: Some(on_present_start),
+                on_present_end: Some(on_present_end),
+            },
+        );
+        tracing::info!("Streamline Vulkan swapchain/present interception hooks installed");
     } else {
-        // On Vulkan, `wgpu-hal` creates `VkInstance`/`VkDevice`/`VkSurfaceKHR`
-        // directly (not through `sl.interposer.dll`'s Vulkan loader proxy), so
-        // routing `vkCreateSwapchainKHR` into `sl.interposer.dll` fails with
-        // `Invalid surface`. Attach only the present markers (PCL/Reflex) and
-        // let `wgpu-hal` drive the real `VK_KHR_swapchain` functions directly.
+        // Without the interposer owning instance creation its swapchain proxies
+        // reject the surface (`Invalid surface`), so keep the real
+        // `VK_KHR_swapchain` functions and only emit present markers.
         wgpu::hal::vulkan::set_swapchain_interceptor(
             wgpu::hal::vulkan::VulkanSwapchainInterceptor {
                 create_swapchain: None,

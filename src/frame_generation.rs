@@ -126,6 +126,30 @@ impl Drop for StreamlineShutdownGuard {
     }
 }
 
+/// Route Vulkan entry-point loading through `sl.interposer.dll` **before**
+/// `RenderPlugin` builds the device.
+///
+/// DLSS-G on Vulkan has no "bring your own swapchain" entry point: Streamline's
+/// `vkCreateSwapchainKHR`/`vkQueuePresentKHR` proxies must own present, and they
+/// only accept a surface whose `VkInstance` the interposer created. Calling this
+/// before device creation is what makes that true; without it Vulkan reports
+/// frame generation as unavailable rather than crashing on `Invalid surface`.
+///
+/// DX12 needs no pre-init (`slUpgradeInterface` upgrades an existing swapchain),
+/// so this deliberately does nothing but log when the interposer is absent.
+#[cfg(feature = "dlss_frame_generation")]
+pub fn install_vulkan_preinit(project_id: &str) {
+    match solarik_streamline_wgpu::preinit(project_id, false) {
+        Ok(()) => tracing::info!("Streamline Vulkan pre-init armed"),
+        Err(error) => {
+            tracing::info!(%error, "Streamline Vulkan pre-init unavailable; frame generation off")
+        }
+    }
+}
+
+#[cfg(not(feature = "dlss_frame_generation"))]
+pub fn install_vulkan_preinit(_project_id: &str) {}
+
 /// Plugin installing Streamline DLSS-G + Reflex and AMD FSR Frame Generation.
 #[derive(Clone, Debug)]
 pub struct FrameGenerationPlugin {

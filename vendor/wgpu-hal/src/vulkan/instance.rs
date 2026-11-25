@@ -580,7 +580,12 @@ impl super::Instance {
             #[cfg(target_env = "ohos")]
             let loaded = ash::Entry::load_from("libvulkan.so");
             #[cfg(not(target_env = "ohos"))]
-            let loaded = ash::Entry::load();
+            let loaded = match crate::vulkan::vulkan_entry_library() {
+                // A frame-generation interposer must own instance/device creation so
+                // its swapchain proxy functions can intercept `vkQueuePresentKHR`.
+                Some(library) => ash::Entry::load_from(library.as_str()),
+                None => ash::Entry::load(),
+            };
             loaded
         }
         .map_err(|err| {

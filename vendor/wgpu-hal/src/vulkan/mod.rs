@@ -71,7 +71,25 @@ pub(crate) fn swapchain_interceptor() -> VulkanSwapchainInterceptor {
     *VULKAN_SWAPCHAIN_INTERCEPTOR.read()
 }
 
-use alloc::{boxed::Box, ffi::CString, sync::Arc, vec::Vec};
+/// Optional override for the library that supplies the Vulkan entry points
+/// (`vkGetInstanceProcAddr`). A frame-generation interposer (NVIDIA Streamline)
+/// must create the `VkInstance`/`VkDevice` itself before its swapchain proxy
+/// functions will accept the application's `VkSurfaceKHR`. Backend-neutral:
+/// `wgpu-hal` carries no vendor dependency and only learns a library name.
+static VULKAN_ENTRY_LIBRARY: RwLock<Option<String>> = RwLock::new(None);
+
+/// Route Vulkan entry-point loading through `library` instead of the system
+/// Vulkan loader. Must be called before the first `Instance::init`; `None`
+/// restores the default loader.
+pub fn set_vulkan_entry_library(library: Option<&str>) {
+    *VULKAN_ENTRY_LIBRARY.write() = library.map(String::from);
+}
+
+pub(crate) fn vulkan_entry_library() -> Option<String> {
+    VULKAN_ENTRY_LIBRARY.read().clone()
+}
+
+use alloc::{boxed::Box, ffi::CString, string::String, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, ffi::CStr, fmt, marker::PhantomData, mem, num::NonZeroU32};
 
 use arrayvec::ArrayVec;
