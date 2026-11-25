@@ -866,16 +866,72 @@ fn make_sl_resource(is_dx12: bool, view: &wgpu::TextureView, is_uav: bool) -> Op
             tex.as_hal::<wgpu::hal::api::Vulkan>()
                 .map(|h| h.raw_handle())
         }?;
+        let raw_view = unsafe {
+            view.as_hal::<wgpu::hal::api::Vulkan>()
+                .map(|h| h.raw_handle().as_raw() as usize as *mut c_void)
+        }
+        .unwrap_or(ptr::null_mut());
+        let vk_format = wgpu_format_to_vk(tex.format());
+        let vk_usage = wgpu_usage_to_vk(tex.usage(), tex.format());
         // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (5) vs VK_IMAGE_LAYOUT_GENERAL (1)
         let layout = if is_uav { 1 } else { 5 };
-        Some(Resource::new_tex2d(
+        let mut res = Resource::new_tex2d(
             image.as_raw() as usize as *mut c_void,
             layout,
             width,
             height,
-            0,
-        ))
+            vk_format,
+        );
+        res.view = raw_view;
+        res.usage = vk_usage;
+        Some(res)
     }
+}
+
+fn wgpu_format_to_vk(format: wgpu::TextureFormat) -> u32 {
+    use wgpu::TextureFormat as F;
+    match format {
+        F::Rgba8Unorm => ash::vk::Format::R8G8B8A8_UNORM.as_raw() as u32,
+        F::Rgba8UnormSrgb => ash::vk::Format::R8G8B8A8_SRGB.as_raw() as u32,
+        F::Bgra8Unorm => ash::vk::Format::B8G8R8A8_UNORM.as_raw() as u32,
+        F::Bgra8UnormSrgb => ash::vk::Format::B8G8R8A8_SRGB.as_raw() as u32,
+        F::Rgba16Float => ash::vk::Format::R16G16B16A16_SFLOAT.as_raw() as u32,
+        F::Rgba32Float => ash::vk::Format::R32G32B32A32_SFLOAT.as_raw() as u32,
+        F::Rg16Float => ash::vk::Format::R16G16_SFLOAT.as_raw() as u32,
+        F::Rg32Float => ash::vk::Format::R32G32_SFLOAT.as_raw() as u32,
+        F::R32Float => ash::vk::Format::R32_SFLOAT.as_raw() as u32,
+        F::R16Float => ash::vk::Format::R16_SFLOAT.as_raw() as u32,
+        F::Depth32Float => ash::vk::Format::D32_SFLOAT.as_raw() as u32,
+        F::Depth32FloatStencil8 => ash::vk::Format::D32_SFLOAT_S8_UINT.as_raw() as u32,
+        F::Depth24Plus | F::Depth24PlusStencil8 => ash::vk::Format::D24_UNORM_S8_UINT.as_raw() as u32,
+        F::Rgb10a2Unorm => ash::vk::Format::A2B10G10R10_UNORM_PACK32.as_raw() as u32,
+        F::Rg11b10Ufloat => ash::vk::Format::B10G11R11_UFLOAT_PACK32.as_raw() as u32,
+        _ => ash::vk::Format::UNDEFINED.as_raw() as u32,
+    }
+}
+
+fn wgpu_usage_to_vk(usage: wgpu::TextureUsages, format: wgpu::TextureFormat) -> u32 {
+    let mut flags = ash::vk::ImageUsageFlags::empty();
+    if usage.contains(wgpu::TextureUsages::COPY_SRC) {
+        flags |= ash::vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+    if usage.contains(wgpu::TextureUsages::COPY_DST) {
+        flags |= ash::vk::ImageUsageFlags::TRANSFER_DST;
+    }
+    if usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+        flags |= ash::vk::ImageUsageFlags::SAMPLED;
+    }
+    if usage.contains(wgpu::TextureUsages::STORAGE_BINDING) {
+        flags |= ash::vk::ImageUsageFlags::STORAGE;
+    }
+    if usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
+        if format.has_depth_aspect() || format.has_stencil_aspect() {
+            flags |= ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+        } else {
+            flags |= ash::vk::ImageUsageFlags::COLOR_ATTACHMENT;
+        }
+    }
+    flags.as_raw()
 }
 
 fn extract_cmd_ptr(is_dx12: bool, cmd_buffer: Option<&mut wgpu::CommandEncoder>) -> *mut c_void {
